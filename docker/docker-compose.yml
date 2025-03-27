@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  edithra_agi:
+    container_name: edithra_agi
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
+      - "8003:8003"
+      - "8004:8004"
+      - "8005:8005"
+      - "8006:8006"
+    env_file:
+      - ./docker/.env
+    volumes:
+      - ../logs:/app/logs
+      - ../core:/app/core
+      - ../debug_system:/app/debug_system
+      - ../main.py:/app/main.py
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
