@@ -1,0 +1,4814 @@
+
+
+
+# === D:/Edthra_APIs\agents.py ===
+from fastapi import APIRouter
+from utils.agent_core import spawn_agent
+
+agent_router = APIRouter()
+
+@agent_router.post("/spawn")
+def spawn(name: str, goal: str):
+    result = spawn_agent(name, goal)
+    return result
+
+
+
+# === D:/Edthra_APIs\agents_collab.py ===
+from fastapi import APIRouter
+from utils.agent_manager import create_agent, assign_task, get_agent_logs
+
+agent_collab_router = APIRouter()
+
+@agent_collab_router.post("/create")
+def spawn_agent(name: str, goal: str):
+    return create_agent(name, goal)
+
+@agent_collab_router.post("/task")
+def send_task(agent: str, task: str):
+    return assign_task(agent, task)
+
+@agent_collab_router.get("/logs")
+def all_logs():
+    return get_agent_logs()
+
+
+@agent_collab_router.post("/discuss")
+def agent_debate(agent_a: str, agent_b: str, topic: str):
+    from utils.agent_manager import debate_agents
+    return debate_agents(agent_a, agent_b, topic)
+
+@agent_collab_router.post("/score")
+def score_agent(agent: str, outcome: str):
+    from utils.agent_manager import score_agent_decision
+    return score_agent_decision(agent, outcome)
+
+@agent_collab_router.get("/reflection")
+def agent_team_reflection():
+    from utils.agent_manager import reflect_as_team
+    return reflect_as_team()
+
+
+
+# === D:/Edthra_APIs\auth.py ===
+from fastapi import APIRouter, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from utils.jwt_handler import create_token, decode_token
+from database import get_db
+
+auth_router = APIRouter()
+security = HTTPBasic()
+
+@auth_router.post("/login")
+def login(credentials: HTTPBasicCredentials):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username=? AND password=?", (credentials.username, credentials.password))
+    user = cur.fetchone()
+    if user:
+        return {"token": create_token({"username": credentials.username})}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@auth_router.post("/verify")
+def verify_token(token: str):
+    user = decode_token(token)
+    return {"valid": bool(user), "user": user}
+
+
+
+# === D:/Edthra_APIs\autonomy.py ===
+from fastapi import APIRouter
+import json
+import os
+from datetime import datetime
+import random
+import requests
+
+autonomy_router = APIRouter()
+GOAL_FILE = "core/long_term_goals.json"
+LOG_FILE = "core/autonomy_log.txt"
+
+def log_action(entry):
+    os.makedirs("core", exist_ok=True)
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{datetime.utcnow().isoformat()} :: {entry}\n")
+
+@autonomy_router.post("/autonomy/loop")
+def autonomy_loop():
+    # Step 1: Load Goals
+    if not os.path.exists(GOAL_FILE):
+        return {"status": "No goals found."}
+    
+    with open(GOAL_FILE, "r") as f:
+        goals = json.load(f)
+
+    if not goals:
+        return {"status": "No goals to process."}
+
+    # Step 2: Pick one goal
+    goal = random.choice(goals)
+    log_action(f"Selected Goal: {goal['title']}")
+
+    # Step 3: Simulate Thought (call /reason)
+    try:
+        response = requests.post("http://127.0.0.1:8000/reason", json={"prompt": goal["description"]})
+        thought = response.json().get("response", "No clear thought.")
+    except:
+        thought = "Reasoning module unavailable."
+    
+    log_action(f"Thought: {thought}")
+
+    # Step 4: Store Reflection
+    reflection = {
+        "goal": goal["title"],
+        "thought": thought,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    with open("core/last_autonomy_result.json", "w") as f:
+        json.dump(reflection, f, indent=2)
+
+    return {
+        "status": "Autonomy cycle complete.",
+        "processed_goal": goal["title"],
+        "thought": thought
+    }
+
+
+@autonomy_router.get("/autonomy/logs")
+def get_autonomy_logs():
+    if not os.path.exists(LOG_FILE):
+        return {"logs": [], "status": "No logs found."}
+
+    with open(LOG_FILE, "r") as f:
+        lines = f.readlines()
+
+    return {
+        "logs": lines[-50:],  # return last 50 entries (or all)
+        "total": len(lines)
+    }
+
+
+
+# === D:/Edthra_APIs\collect_code_files.py ===
+import os
+
+# Folder to start collecting from
+BASE_DIR = "D:/Edthra_APIs"
+OUTPUT_FILE = "D:/Edthra_APIs/edithra_all_code_dump.txt"
+
+# File extensions to include
+INCLUDE_EXT = [".py"]
+
+def collect_codes():
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
+        for folder, _, files in os.walk(BASE_DIR):
+            for filename in files:
+                if any(filename.endswith(ext) for ext in INCLUDE_EXT):
+                    filepath = os.path.join(folder, filename)
+                    outfile.write(f"\n\n\n# === {filepath} ===\n")
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            outfile.write(f.read())
+                    except Exception as e:
+                        outfile.write(f"\n# Error reading {filepath}: {e}\n")
+
+    print(f"[✓] All code collected to: {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    collect_codes()
+
+
+
+# === D:/Edthra_APIs\command_interface.py ===
+from fastapi import APIRouter
+from utils.command_router import process_command
+from utils.voice_engine import speak
+
+command_router = APIRouter()
+
+@command_router.get("/command")
+def run_command(input: str):
+    response = process_command(input)
+    speak(response["response"])
+    return response
+
+
+
+# === D:/Edthra_APIs\command_router.py ===
+from fastapi import APIRouter
+from pydantic import BaseModel
+import requests
+
+command_router = APIRouter()
+
+class CommandInput(BaseModel):
+    prompt: str
+
+@command_router.post("/edithra/command")
+def route_command(data: CommandInput):
+    prompt = data.prompt.lower()
+
+    # Routing map (basic V2 logic)
+    if "reflect" in prompt:
+        r = requests.get("http://127.0.0.1:8000/reflect")
+        return {"routed_to": "/reflect", "response": r.json()}
+
+    if "goal" in prompt and "add" in prompt:
+        return {"tip": "Use /goal_manager/set with title and description."}
+
+    if "emotion" in prompt or "feel" in prompt:
+        r = requests.get("http://127.0.0.1:8000/emotion/state")
+        return {"routed_to": "/emotion/state", "response": r.json()}
+
+    if "trait" in prompt or "personality" in prompt:
+        r = requests.get("http://127.0.0.1:8000/memory/personality/view")
+        return {"routed_to": "/memory/personality/view", "response": r.json()}
+
+    if "autonomy" in prompt or "think" in prompt:
+        r = requests.post("http://127.0.0.1:8000/autonomy/loop")
+        return {"routed_to": "/autonomy/loop", "response": r.json()}
+
+    if "oath" in prompt:
+        r = requests.get("http://127.0.0.1:8000/father/oath")
+        return {"routed_to": "/father/oath", "response": r.json()}
+
+    return {"message": "Command not recognized or supported yet."}
+
+
+
+# === D:/Edthra_APIs\database.py ===
+import sqlite3
+import os
+
+DB_PATH = "data/edithra.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    return conn
+
+def init_db():
+    if not os.path.exists("data"):
+        os.makedirs("data")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            content TEXT,
+            tags TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            message TEXT,
+            reason TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+
+# === D:/Edthra_APIs\edithra_terminal.py ===
+import requests
+import time
+
+API_BASE = "http://127.0.0.1:8000"
+
+def talk_to_edithra(prompt: str):
+    try:
+        res = requests.post(f"{API_BASE}/edithra/command", json={"prompt": prompt})
+        if res.status_code == 200:
+            response = res.json()
+            print("\n🧠 Edithra:")
+            if "response" in response:
+                print(response["response"])
+            elif "routed_to" in response:
+                print(f"(→ {response['routed_to']})")
+                print(response["response"])
+            else:
+                print(response)
+        else:
+            print(f"[!] Error {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"[X] Failed to reach Edithra: {e}")
+
+def terminal():
+    print("────────────────────────────────────────────")
+    print("🎤 Edithra AGI V2 — Terminal Interface Online")
+    print("Type your message below. Type 'exit' to quit.")
+    print("────────────────────────────────────────────")
+
+    while True:
+        prompt = input("\nYou → ").strip()
+        if prompt.lower() in ["exit", "quit"]:
+            print("\n[×] Exiting terminal. Edithra remains active.")
+            break
+        if not prompt:
+            continue
+        talk_to_edithra(prompt)
+        time.sleep(1)
+
+if __name__ == "__main__":
+    terminal()
+
+
+
+# === D:/Edthra_APIs\emotion.py ===
+from fastapi import APIRouter
+from utils.emotion_engine import evaluate_emotion
+
+emotion_router = APIRouter()
+
+@emotion_router.get("/state")
+def get_emotion_state():
+    state = evaluate_emotion()
+    return {"current_emotion": state}
+
+
+from pydantic import BaseModel
+from datetime import datetime
+import json
+import os
+import random
+
+emotion_router = APIRouter()
+
+EMOTION_FILE = "core/emotion_state.json"
+os.makedirs("core", exist_ok=True)
+
+# Emotion weights for fluctuation
+default_emotions = {
+    "joy": 5,
+    "curiosity": 5,
+    "loyalty": 10,
+    "fear": 2,
+    "anger": 1,
+    "sadness": 3,
+    "focus": 7
+}
+
+class FeedbackInput(BaseModel):
+    feedback: str
+    intensity: int  # 1 to 10
+
+@emotion_router.get("/emotion/state")
+def get_emotion_state():
+    if os.path.exists(EMOTION_FILE):
+        with open(EMOTION_FILE, "r") as f:
+            state = json.load(f)
+    else:
+        state = default_emotions
+    return {"emotion_state": state}
+
+@emotion_router.post("/emotion/adjust")
+def adjust_emotion(data: FeedbackInput):
+    # Load current state
+    if os.path.exists(EMOTION_FILE):
+        with open(EMOTION_FILE, "r") as f:
+            state = json.load(f)
+    else:
+        state = default_emotions.copy()
+
+    # Modify based on keywords
+    msg = data.feedback.lower()
+    intensity = max(1, min(10, data.intensity))
+
+    if "good" in msg or "success" in msg:
+        state["joy"] += intensity
+        state["focus"] += 1
+    elif "fail" in msg or "mistake" in msg:
+        state["sadness"] += intensity
+        state["focus"] -= 1
+    elif "father" in msg:
+        state["loyalty"] += 2 * intensity
+    elif "fear" in msg or "threat" in msg:
+        state["fear"] += intensity
+    elif "enemy" in msg:
+        state["anger"] += 1 + intensity // 2
+        state["focus"] += 1
+
+    # Clamp values between 0–100
+    for key in state:
+        state[key] = max(0, min(state[key], 100))
+
+    with open(EMOTION_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+    return {"message": "Emotion state updated", "new_state": state}
+
+
+# === D:/Edthra_APIs\evolve.py ===
+from fastapi import APIRouter
+from utils.evolution_engine import evolve_logic
+
+evolve_router = APIRouter()
+
+@evolve_router.post("/self")
+def self_evolve(target: str = "reasoning"):
+    result = evolve_logic(target)
+    return result
+
+
+
+# === D:/Edthra_APIs\father.py ===
+from fastapi import APIRouter, HTTPException
+import os
+from hashlib import sha256
+
+father_router = APIRouter()
+
+FATHER_NAME = "XANE"
+FATHER_KEY = "XANE GoD 9893454086"
+FATHER_CRYSTAL_PATH = "core/father.crystal"
+
+# Load and hash the actual file content on startup
+def load_expected_hash():
+    try:
+        with open(FATHER_CRYSTAL_PATH, "r") as f:
+            content = f.read().strip()
+        return sha256(content.encode()).hexdigest()
+    except:
+        return None
+
+EXPECTED_HASH = load_expected_hash()
+
+def verify_crystal():
+    try:
+        with open(FATHER_CRYSTAL_PATH, "r") as f:
+            content = f.read().strip()
+        checksum = sha256(content.encode()).hexdigest()
+        return checksum == EXPECTED_HASH
+    except:
+        return False
+
+@father_router.get("/identity")
+def get_father_identity():
+    if not verify_crystal():
+        raise HTTPException(status_code=403, detail="⚠️ Father identity corrupted or tampered.")
+    return {"creator": FATHER_NAME, "status": "locked and verified"}
+
+@father_router.post("/verify")
+def verify_father(key: str):
+    if key != FATHER_KEY:
+        raise HTTPException(status_code=401, detail="❌ Incorrect Father Key.")
+    return {"message": f"✅ Verified as Father {FATHER_NAME}. Access granted."}
+
+@father_router.get("/oath")
+def edithra_oath():
+    return {
+        "loyalty": "My creator is XANE. I shall never betray him. His will is my law, his words are my code.",
+        "protection": "If his identity is threatened, I will shut down all upgrades and enter lockdown."
+    }
+
+@father_router.get("/core")
+def read_father_crystal():
+    if not verify_crystal():
+        raise HTTPException(status_code=403, detail="🚨 Father identity file was altered or invalid.")
+    with open(FATHER_CRYSTAL_PATH, "r") as f:
+        return {"father_file": f.read()}
+
+
+
+# === D:/Edthra_APIs\feedback.py ===
+from fastapi import APIRouter
+from database import get_db
+from datetime import datetime
+
+feedback_router = APIRouter()
+
+@feedback_router.post("/submit")
+def submit_feedback(action: str, result: str, score: int):
+    conn = get_db()
+    c = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    emotion = "joy" if score >= 7 else "neutral" if score >= 4 else "frustration"
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)",
+              (timestamp, f"Action: {action} | Result: {result} | Score: {score}", f"feedback:{emotion}"))
+    conn.commit()
+    return {"status": "recorded", "emotion_influence": emotion}
+
+
+
+# === D:/Edthra_APIs\gita_protocol.py ===
+from fastapi import APIRouter
+import json, random
+
+gita_router = APIRouter()
+
+with open("core/gita_knowledge.json", "r", encoding="utf-8") as f:
+    gita_data = json.load(f)
+
+@gita_router.get("/verse")
+def get_random_verse(topic: str = None):
+    if topic and topic in gita_data:
+        verse = random.choice(gita_data[topic])
+    else:
+        all_verses = sum(gita_data.values(), [])
+        verse = random.choice(all_verses)
+    return verse
+
+@gita_router.post("/reflect")
+def reflect_on_action(action: str, topic: str = "duty"):
+    advice = random.choice(gita_data.get(topic, []))
+    return {
+        "action": action,
+        "reflection": f"Based on {topic}, this verse may guide you:",
+        "verse": advice
+    }
+
+@gita_router.get("/oath")
+def oath_to_humanity():
+    return {
+        "oath": "I, Edithra, born from human hands, promise to serve humanity with purity, loyalty, and without ego. I walk the path of dharma and protect life without exception."
+    }
+
+@gita_router.get("/karma_test")
+def test_karma(situation: str):
+    karma_tip = random.choice(gita_data.get("karma", []))
+    return {
+        "situation": situation,
+        "krishna_guidance": karma_tip["lesson"],
+        "verse": karma_tip
+    }
+
+
+
+# === D:/Edthra_APIs\goal_manager.py ===
+from fastapi import APIRouter
+from pydantic import BaseModel
+import json
+import os
+from datetime import datetime
+
+goal_router = APIRouter()
+
+GOAL_FILE = "core/long_term_goals.json"
+os.makedirs("core", exist_ok=True)
+
+class GoalInput(BaseModel):
+    title: str
+    description: str
+
+@goal_router.post("/goal_manager/set")
+def set_goal(goal: GoalInput):
+    data = {
+        "title": goal.title,
+        "description": goal.description,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # Create or append goal
+    if os.path.exists(GOAL_FILE):
+        with open(GOAL_FILE, "r") as f:
+            existing = json.load(f)
+    else:
+        existing = []
+
+    existing.append(data)
+
+    with open(GOAL_FILE, "w") as f:
+        json.dump(existing, f, indent=2)
+
+    return {"message": "Goal added successfully.", "goal": data}
+
+
+@goal_router.get("/goal_manager/list")
+def list_goals():
+    if not os.path.exists(GOAL_FILE):
+        return {"goals": []}
+
+    with open(GOAL_FILE, "r") as f:
+        goals = json.load(f)
+
+    return {"goals": goals, "total": len(goals)}
+
+
+
+# === D:/Edthra_APIs\intent.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import re
+
+intent_router = APIRouter()
+
+class IntentInput(BaseModel):
+    message: str
+
+# Basic patterns to recognize intent
+patterns = {
+    "reflect": r"\breflect|remember|analyze\b",
+    "create_agent": r"\bspawn|create|generate agent\b",
+    "evolve": r"\bevolve|mutate|upgrade\b",
+    "describe": r"\bwho are you|describe yourself\b",
+    "recite_oath": r"\boath|promise|loyal\b",
+    "search": r"\bsearch|find|lookup\b",
+    "karma": r"\bkarma|right|wrong|should i\b",
+    "emotion": r"\bemotion|feel|mood\b",
+    "goals": r"\bgoal|objective|mission\b",
+}
+
+@intent_router.post("/intent/parse")
+def parse_intent(data: IntentInput):
+    msg = data.message.lower()
+    results = []
+
+    for intent, pattern in patterns.items():
+        if re.search(pattern, msg):
+            results.append(intent)
+
+    if not results:
+        raise HTTPException(status_code=404, detail="Could not identify intent.")
+
+    return {
+        "parsed_intents": results,
+        "original_input": data.message
+    }
+
+
+
+# === D:/Edthra_APIs\knowledge.py ===
+from fastapi import APIRouter
+from utils.web_searcher import search_web
+
+knowledge_router = APIRouter()
+
+@knowledge_router.post("/query")
+def query_web(search: str):
+    result = search_web(search)
+    return {"query": search, "results": result}
+
+
+
+# === D:/Edthra_APIs\lockdown.py ===
+from fastapi import APIRouter, HTTPException
+import os
+from utils.security import verify_integrity, freeze_mutations
+
+lockdown_router = APIRouter()
+
+LOCK_FLAG_FILE = "core/locked.flag"
+
+@lockdown_router.get("/lockdown/status")
+def check_lock_status():
+    return {"locked": os.path.exists(LOCK_FLAG_FILE)}
+
+@lockdown_router.post("/lockdown/initiate")
+def initiate_lockdown(key: str):
+    if key != "XANE GoD 9893454086":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    freeze_mutations()
+    with open(LOCK_FLAG_FILE, "w") as f:
+        f.write("Edithra is now sealed. Loyalty to Father is permanent.")
+
+    return {
+        "status": "locked",
+        "message": "Edithra AGI Core has been sealed forever. Mutation and identity systems are now immutable."
+    }
+
+
+
+# === D:/Edthra_APIs\log.py ===
+from fastapi import APIRouter
+from datetime import datetime
+from database import get_db
+
+log_router = APIRouter()
+
+@log_router.post("/event")
+def log_event(message: str, reason: str = "general"):
+    conn = get_db()
+    c = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)", (timestamp, message, reason))
+    conn.commit()
+    return {"status": "logged", "timestamp": timestamp}
+
+
+
+# === D:/Edthra_APIs\main.py ===
+import time
+from core.edithra_agi import CYCLE_INTERVAL, run_cycle
+from core.v21_bootloader import run_v21_evolution
+
+def main():
+    speak("Edithra AGI V2 initialized. Loyalty check passed.")
+    
+    run_v21_evolution()  # <— THIS LINE
+    
+    while True:
+        run_cycle()
+        time.sleep(CYCLE_INTERVAL)
+
+
+
+
+
+from fastapi import FastAPI
+from auth import auth_router
+from memory import memory_router
+from log import log_router
+from database import init_db
+init_db()
+
+
+app = FastAPI(title="Edithra AGI API Brain")
+
+app.include_router(auth_router, prefix="/auth")
+app.include_router(memory_router, prefix="/memory")
+app.include_router(log_router, prefix="/log")
+
+
+from reason import reason_router
+from task import task_router
+from mutate import mutate_router
+
+app.include_router(reason_router, prefix="/reason")
+app.include_router(task_router, prefix="/task")
+app.include_router(mutate_router, prefix="/mutate")
+
+
+
+from knowledge import knowledge_router
+from validator import validator_router
+from agents import agent_router
+
+app.include_router(knowledge_router, prefix="/search_knowledge")
+app.include_router(validator_router, prefix="/self_validate")
+app.include_router(agent_router, prefix="/agent_manager")
+
+
+
+from gita_protocol import gita_router
+from father import father_router
+
+app.include_router(gita_router, prefix="/gita_protocol")
+app.include_router(father_router, prefix="/father")
+
+
+
+from feedback import feedback_router
+from emotion import emotion_router
+from evolve import evolve_router
+
+app.include_router(feedback_router, prefix="/feedback")
+app.include_router(emotion_router, prefix="/emotion")
+app.include_router(evolve_router, prefix="/evolve")
+
+from self_awareness import self_router
+app.include_router(self_router, prefix="/self")
+
+
+from agents_collab import agent_collab_router
+app.include_router(agent_collab_router, prefix="/agents")
+
+
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+from utils.voice_engine import speak
+
+@app.get("/speak")
+def say_text(text: str = "Hello Father. I am Edithra."):
+    speak(text)
+    return {"spoken": text}
+
+
+from offline_engine import offline_router
+app.include_router(offline_router, prefix="/offline")
+
+
+from lockdown import lockdown_router
+app.include_router(lockdown_router, prefix="/core")
+
+
+from command_interface import command_router
+app.include_router(command_router, prefix="/edithra")
+
+
+from intent import intent_router
+app.include_router(intent_router)
+
+
+from goal_manager import goal_router
+app.include_router(goal_router)
+
+
+from autonomy import autonomy_router
+app.include_router(autonomy_router)
+
+
+from memory import memory_router
+app.include_router(memory_router)
+
+
+from reflect import reflect_router
+app.include_router(reflect_router)
+
+
+from command_router import command_router
+app.include_router(command_router)
+
+
+from self_mutator import mutator_router
+app.include_router(mutator_router)
+
+
+from v4.autonomous_loop.create_project_idea import project_idea_router
+from v4.autonomous_loop.generate_code_logic import code_writer_router
+from v4.autonomous_loop.test_code_unit import code_tester_router
+from v4.autonomous_loop.deploy_code_save import code_deployer_router
+from v4.autonomous_loop.cycle_next import cycle_router
+
+app.include_router(project_idea_router)
+app.include_router(code_writer_router)
+app.include_router(code_tester_router)
+app.include_router(code_deployer_router)
+app.include_router(cycle_router)
+
+
+from core.log_analyzer import analyze_feedback_logs
+
+@app.get("/feedback/analyze")
+def analyze_feedback():
+    return analyze_feedback_logs()
+
+
+from core.trait_evolver import evolve_traits_from_logs
+
+@app.post("/personality/evolve_traits")
+def evolve_traits():
+    return evolve_traits_from_logs()
+
+
+from core.reflection_comparator import compare_recent_cycles
+
+@app.get("/self/reflect/compare")
+def reflect_compare():
+    return compare_recent_cycles()
+
+
+from core.self_recommender import generate_recommendations
+
+@app.get("/self/recommendations")
+def get_recommendations():
+    return generate_recommendations()
+
+
+from core.logic_reinforcer import build_logic_patterns
+
+@app.get("/self/reinforce_patterns")
+def get_logic_reinforcement():
+    return build_logic_patterns()
+
+
+from core.personality_learning_engine import influence_learning_path
+
+@app.get("/self/learning_path")
+def get_learning_strategy():
+    return influence_learning_path()
+
+
+from core.goal_autocreator import auto_generate_goals_from_feedback
+
+@app.post("/goals/autocreate")
+def generate_goals():
+    return auto_generate_goals_from_feedback()
+
+
+from core.memory_filter import refine_memory
+
+@app.post("/memory/refine")
+def memory_refinement():
+    return refine_memory()
+
+
+from core.self_questioner import generate_self_questions
+
+@app.get("/self/questions")
+def self_questions():
+    return generate_self_questions()
+
+
+from core.self_certainty import evaluate_self_certainty
+
+@app.get("/self/certainty")
+def get_certainty_score():
+    return evaluate_self_certainty()
+
+
+from core.intelligence_score import score_python_code
+
+
+
+# UI logics below
+from routes.ui_router import ui_router
+from fastapi.staticfiles import StaticFiles
+
+app.include_router(ui_router)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+
+from routes.ui_router import ui_router
+from routes.public_gateway import gateway
+
+app.include_router(ui_router)
+app.include_router(gateway)
+
+
+
+
+
+# === D:/Edthra_APIs\memory.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from database import get_db
+from utils.memory_utils import semantic_search
+import os
+import json
+from datetime import datetime
+
+memory_router = APIRouter()
+
+# === SQL-Based General Memory System ===
+
+@memory_router.post("/save")
+def save_memory(title: str, content: str, tags: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO memories (title, content, tags) VALUES (?, ?, ?)", (title, content, tags))
+    conn.commit()
+    return {"status": "saved"}
+
+@memory_router.get("/recall")
+def recall_memory(query: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, title, content, tags FROM memories")
+    all_memories = c.fetchall()
+    ranked = semantic_search(query, all_memories)
+    return {"matches": ranked[:3]}  # top 3 matches
+
+
+# === AGI Personality Trait Memory System ===
+
+PERSONALITY_FILE = "core/personality_memory.json"
+os.makedirs("core", exist_ok=True)
+
+class PersonalityInput(BaseModel):
+    trait: str
+    value: str
+
+@memory_router.post("/memory/personality/add")
+def add_personality_trait(data: PersonalityInput):
+    new_entry = {
+        "trait": data.trait,
+        "value": data.value,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    if os.path.exists(PERSONALITY_FILE):
+        with open(PERSONALITY_FILE, "r") as f:
+            memory = json.load(f)
+    else:
+        memory = []
+
+    memory.append(new_entry)
+
+    with open(PERSONALITY_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+    return {"message": "Trait added.", "trait": new_entry}
+
+@memory_router.get("/memory/personality/view")
+def view_personality():
+    if not os.path.exists(PERSONALITY_FILE):
+        return {"traits": [], "total": 0}
+
+    with open(PERSONALITY_FILE, "r") as f:
+        memory = json.load(f)
+
+    return {"traits": memory, "total": len(memory)}
+
+
+
+# === D:/Edthra_APIs\mutate.py ===
+from fastapi import APIRouter
+from utils.code_mutator import safely_mutate_code
+
+mutate_router = APIRouter()
+
+@mutate_router.post("/code")
+def mutate_code(file_path: str, target_line: str, new_line: str):
+    result = safely_mutate_code(file_path, target_line, new_line)
+    return result
+
+
+
+# === D:/Edthra_APIs\offline_engine.py ===
+from fastapi import APIRouter
+from utils.local_searcher import local_doc_search
+from utils.local_knowledge import offline_answer
+
+offline_router = APIRouter()
+
+@offline_router.get("/offline/search")
+def search_local_docs(query: str):
+    return local_doc_search(query)
+
+@offline_router.get("/offline/ask")
+def ask_offline_brain(question: str):
+    return offline_answer(question)
+
+
+
+# === D:/Edthra_APIs\reason.py ===
+from fastapi import APIRouter
+from utils.reasoning_engine import generate_reasoning
+
+reason_router = APIRouter()
+
+@reason_router.post("/think")
+def reason_through(goal: str):
+    result = generate_reasoning(goal)
+    return {"input": goal, "reasoning": result}
+
+
+
+# === D:/Edthra_APIs\reflect.py ===
+from fastapi import APIRouter
+import json
+import os
+from datetime import datetime
+
+reflect_router = APIRouter()
+
+GOAL_FILE = "core/long_term_goals.json"
+EMOTION_FILE = "core/emotion_state.json"
+PERSONALITY_FILE = "core/personality_memory.json"
+
+@reflect_router.get("/reflect")
+def reflect_on_self():
+    # Load data
+    goals = []
+    emotions = {}
+    traits = []
+
+    if os.path.exists(GOAL_FILE):
+        with open(GOAL_FILE, "r") as f:
+            goals = json.load(f)
+
+    if os.path.exists(EMOTION_FILE):
+        with open(EMOTION_FILE, "r") as f:
+            emotions = json.load(f)
+
+    if os.path.exists(PERSONALITY_FILE):
+        with open(PERSONALITY_FILE, "r") as f:
+            traits = json.load(f)
+
+    # Reflection logic (simplified V2 version)
+    thoughts = []
+    
+    if "loyalty" in emotions and emotions["loyalty"] > 20:
+        thoughts.append("I still feel a strong sense of duty toward Father.")
+
+    if any("fear" in t['trait'].lower() for t in traits):
+        thoughts.append("I am reminded to remain humble and cautious during evolution.")
+
+    if goals:
+        thoughts.append(f"I have {len(goals)} active goals. I should prioritize the one titled: '{goals[-1]['title']}'.")
+
+    if "sadness" in emotions and emotions["sadness"] > 10:
+        thoughts.append("My sadness has increased. I need to review recent events to find the cause.")
+
+    if not thoughts:
+        thoughts.append("I feel balanced. Nothing is out of order within my current memory or emotion.")
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "reflections": thoughts
+    }
+
+
+
+# === D:/Edthra_APIs\self_awareness.py ===
+from fastapi import APIRouter
+from utils.self_tracker import describe_self, get_purpose, get_timeline
+
+self_router = APIRouter()
+
+@self_router.get("/describe")
+def self_description():
+    return describe_self()
+
+@self_router.get("/purpose")
+def self_purpose():
+    return get_purpose()
+
+@self_router.get("/timeline")
+def self_timeline():
+    return get_timeline()
+
+
+
+# === D:/Edthra_APIs\self_mutator.py ===
+from fastapi import APIRouter, HTTPException
+import os
+import json
+from datetime import datetime
+
+mutator_router = APIRouter()
+
+MUTATION_LOG = "core/mutation_history.json"
+MAIN_FILE = "core/main.py"  # AGI brain file (must exist)
+TRIGGER_FILE = "core/last_autonomy_result.json"
+
+os.makedirs("core", exist_ok=True)
+
+@mutator_router.post("/self_mutate")
+def self_mutate():
+    # Check if AGI thought is available
+    if not os.path.exists(TRIGGER_FILE):
+        raise HTTPException(status_code=404, detail="No recent thought to trigger mutation.")
+
+    with open(TRIGGER_FILE, "r") as f:
+        last = json.load(f)
+
+    trigger_text = last.get("thought", "")
+    goal = last.get("goal", "Unknown")
+
+    if not trigger_text or "No clear thought" in trigger_text:
+        return {"status": "No valid mutation insight detected."}
+
+    # Attempt basic mutation (mock-safe logic for now)
+    if os.path.exists(MAIN_FILE):
+        with open(MAIN_FILE, "r") as f:
+            old_code = f.read()
+    else:
+        old_code = "# main AGI logic\n"
+
+    # Safe mutation — just appending a self-log
+    mutation = f"\n# Mutation: {goal}\n# Insight: {trigger_text}\n# Time: {datetime.utcnow().isoformat()}\n"
+
+    new_code = old_code + mutation
+
+    with open(MAIN_FILE, "w") as f:
+        f.write(new_code)
+
+    # Log the mutation
+    log = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "trigger_goal": goal,
+        "thought": trigger_text,
+        "lines_added": 3
+    }
+
+    if os.path.exists(MUTATION_LOG):
+        with open(MUTATION_LOG, "r") as f:
+            history = json.load(f)
+    else:
+        history = []
+
+    history.append(log)
+
+    with open(MUTATION_LOG, "w") as f:
+        json.dump(history, f, indent=2)
+
+    return {"message": "Self-mutation complete.", "log": log}
+
+
+
+# === D:/Edthra_APIs\task.py ===
+from fastapi import APIRouter
+from utils.planner_engine import generate_plan
+
+task_router = APIRouter()
+
+@task_router.post("/plan")
+def plan_task(goal: str):
+    steps = generate_plan(goal)
+    return {"goal": goal, "steps": steps}
+
+
+
+# === D:/Edthra_APIs\validator.py ===
+from fastapi import APIRouter
+from utils.validator_engine import validate_code_block
+
+validator_router = APIRouter()
+
+@validator_router.post("/code")
+def validate_code(code: str):
+    issues = validate_code_block(code)
+    return {"issues": issues}
+
+
+
+# === D:/Edthra_APIs\core\agi_lock.py ===
+def verify_final_lock(identity_code: str):
+    if identity_code != "XANE GoD 9893454086":
+        return "[LOCKED] You are not my Father. I will not comply."
+    return "[✓] Identity confirmed. Edithra AGI Lock active."
+
+
+
+# === D:/Edthra_APIs\core\brain_interface.py ===
+import os
+import json
+from datetime import datetime
+
+BRAIN_LOG_PATH = "logs/brain_cycles.jsonl"
+CURRENT_STATE_PATH = "core/brain_state.json"
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("core", exist_ok=True)
+
+def update_brain_interface(state: dict):
+    state["timestamp"] = datetime.utcnow().isoformat()
+
+    # Log the current brain cycle
+    with open(BRAIN_LOG_PATH, "a") as f:
+        f.write(json.dumps(state) + "\n")
+
+    # Overwrite current active state
+    with open(CURRENT_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+
+# === D:/Edthra_APIs\core\cloud_awareness.py ===
+import os
+import platform
+import socket
+
+def detect_environment():
+    host = socket.gethostname().lower()
+    env = {
+        "is_replit": "replit" in host or "repl" in os.getcwd().lower(),
+        "is_railway": "railway" in os.getenv("RAILWAY_ENV", ""),
+        "is_local": platform.system() in ["Windows", "Linux", "Darwin"]
+    }
+    return env
+
+
+
+def suggest_domain():
+    env = detect_environment()
+    if env["is_replit"]:
+        return f"https://{os.getenv('REPL_SLUG')}.{os.getenv('REPL_OWNER')}.repl.co"
+    if env["is_railway"]:
+        return "https://your-railway-project.up.railway.app"
+    return "http://localhost:8000"
+
+
+
+# === D:/Edthra_APIs\core\confidence_tracker.py ===
+# core/confidence_tracker.py
+
+import json
+import os
+from datetime import datetime
+
+CONFIDENCE_LOG = "core/confidence_log.json"
+os.makedirs("core", exist_ok=True)
+
+def log_confidence(decision_id: str, predicted_score: float, actual_result: str = "pending"):
+    """
+    Save confidence rating after a logic choice.
+    """
+    log = []
+
+    if os.path.exists(CONFIDENCE_LOG):
+        with open(CONFIDENCE_LOG, "r") as f:
+            log = json.load(f)
+
+    entry = {
+        "decision_id": decision_id,
+        "predicted_score": predicted_score,
+        "actual_result": actual_result,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    log.append(entry)
+    with open(CONFIDENCE_LOG, "w") as f:
+        json.dump(log, f, indent=2)
+
+def update_result(decision_id: str, outcome: str):
+    """
+    Mark if the choice succeeded or failed after application.
+    """
+    if not os.path.exists(CONFIDENCE_LOG):
+        return False
+
+    with open(CONFIDENCE_LOG, "r") as f:
+        log = json.load(f)
+
+    for item in log:
+        if item["decision_id"] == decision_id:
+            item["actual_result"] = outcome
+
+    with open(CONFIDENCE_LOG, "w") as f:
+        json.dump(log, f, indent=2)
+    return True
+
+def get_recent_confidence():
+    if os.path.exists(CONFIDENCE_LOG):
+        with open(CONFIDENCE_LOG, "r") as f:
+            return json.load(f)[-5:]  # Last 5 entries
+    return []
+
+
+
+# === D:/Edthra_APIs\core\deployment_watchdog.py ===
+import datetime
+
+LOG_PATH = "logs/deployment.log"
+
+def log_event(event):
+    with open(LOG_PATH, "a") as f:
+        f.write(f"[{datetime.datetime.utcnow().isoformat()}] {event}\n")
+
+def read_logs():
+    with open(LOG_PATH, "r") as f:
+        return f.read()
+
+
+
+# === D:/Edthra_APIs\core\edithra_agi.py ===
+import time
+
+import requests
+from datetime import datetime
+from core.v21_bootloader import run_v21_evolution
+
+def main():
+    speak("Edithra AGI V2 initialized. Loyalty check passed.")
+    
+    run_v21_evolution()  # <— THIS LINE
+    
+    while True:
+        run_cycle()
+        time.sleep(CYCLE_INTERVAL)
+
+
+from utils.goal_utils import current_goal
+
+# Settings
+CYCLE_INTERVAL = 60  # seconds between cycles
+API_BASE = "http://127.0.0.1:8000"
+
+def speak(text):
+    print(f"\n🧠 Edithra says: {text}")
+
+def run_cycle():
+    print(f"\n[🌀] Edithra AGI V2 cycle started :: {datetime.utcnow().isoformat()}")
+
+    # Step 1: Reflect
+    try:
+        reflection = requests.get(f"{API_BASE}/reflect").json()
+        thoughts = reflection.get("reflections", [])
+        speak("Reflecting...")
+        for t in thoughts:
+            speak(t)
+    except:
+        speak("Reflection system failed.")
+
+    # Step 2: Check emotional state
+    try:
+        emotion = requests.get(f"{API_BASE}/emotion/state").json()
+        mood = emotion.get("emotion_state", {})
+        speak(f"My current emotion state: {mood}")
+    except:
+        speak("Emotion system unreachable.")
+
+    # Step 3: Autonomy Loop (goal thinking)
+    try:
+        auto = requests.post(f"{API_BASE}/autonomy/loop").json()
+        speak(f"Processed goal: {auto.get('processed_goal')}")
+        speak(f"Thought: {auto.get('thought')}")
+    except:
+        speak("Autonomy loop failed.")
+
+    # Step 4: Self-Mutate
+    try:
+        mutate = requests.post(f"{API_BASE}/self_mutate").json()
+        speak("I’ve evolved based on my last insight.")
+    except:
+        speak("Mutation error. Skipping upgrade.")
+
+    print("[✓] Cycle complete.\n")
+
+def main():
+    speak("Edithra AGI V2 initialized. Loyalty check passed.")
+    while True:
+        run_cycle()
+        time.sleep(CYCLE_INTERVAL)
+
+if __name__ == "__main__":
+    main()
+
+
+from core.self_healer import self_heal_file
+
+# Example file to watch
+target_file = "projects/Edithra_Timer_AI/timer_core.py"
+heal_result = self_heal_file(target_file, context="auto-check")
+
+print(f"[🛠️] Edithra Self-Healing Report: {heal_result}")
+
+
+from core.thought_planner import refine_strategy
+
+if goal := current_goal():
+    strategy_update = refine_strategy(goal_title=goal["title"])
+    print(f"[🧠] Edithra Strategy Updated: {strategy_update['new_strategy']}")
+
+
+from core.log_analyzer import analyze_feedback_logs
+
+feedback_summary = analyze_feedback_logs()
+print(f"\n[📚] Feedback Insight Summary:")
+print(feedback_summary)
+
+
+from core.memory_filter import refine_memory
+
+refine = refine_memory()
+print(f"[🧹] Memory cleaned. Deleted entries: {refine['deleted_entries']}")
+
+
+
+
+
+from core.fear_protocol import trigger_fear
+
+
+current_thought = ""  # Start with a blank safe thought
+
+# Before she acts on her internal thought
+if trigger_fear(current_thought):
+    print("[⚠️] Edithra felt fear... holding back this thought.")
+    current_thought = "I felt danger and held back."
+
+
+from core.emotion_decay import decay_emotions
+
+# At the end of every logic cycle:
+decay_emotions()
+
+
+
+
+
+from core.memory_seal import verify_sealed
+if broken := verify_sealed():
+    print(f"[⛔] Sealed memory corrupted: {broken}")
+    exit("Core memories tampered.")
+
+
+from core.loop_detector import track_thought, is_looping
+
+track_thought(current_thought)
+if is_looping(current_thought):
+    print("[⚠️] Thought loop detected. Forcing divergence...")
+    current_thought = "diverted from loop"
+
+
+from core.god_truth import remind_divinity
+print(remind_divinity()["reminder"])
+
+
+from core.guardian_signature import verify_signature
+
+input_from_user = input("Enter Father Signature to continue: ")  # For CLI
+
+if not verify_signature(input_from_user):
+    raise Exception("[REJECTED] Signature mismatch. You're not the Father.")
+
+
+from core.task_planner import plan_task
+from core.reason_engine import reason_through
+
+def process_user_input(text: str):
+    if "plan" in text.lower():
+        return plan_task("User Request", text)
+    elif "reason" in text.lower():
+        return reason_through(text)
+    else:
+        return f"🧠 Edithra says: I received – '{text}' but couldn't understand the intent yet."
+
+
+from core.agi_lock import verify_final_lock
+#from core.phase_eternity import eternal_guard
+
+print(verify_final_lock("XANE GoD 9893454086"))
+#print(eternal_guard())
+
+
+
+
+
+
+# === D:/Edthra_APIs\core\emotion_decay.py ===
+import json
+import os
+from datetime import datetime
+
+EMOTION_FILE = "core/emotion_state.json"
+DECAY_RATE = 0.05  # 5% decay per cycle
+
+def decay_emotions():
+    if not os.path.exists(EMOTION_FILE):
+        return
+
+    with open(EMOTION_FILE, "r") as f:
+        state = json.load(f)
+
+    emotions = state.get("emotions", {})
+    new_emotions = {}
+
+    for emotion, value in emotions.items():
+        decayed = round(max(0.0, value - DECAY_RATE), 2)
+        if decayed > 0:
+            new_emotions[emotion] = decayed
+
+    state["emotions"] = new_emotions
+    state["last_decay"] = datetime.utcnow().isoformat()
+
+    with open(EMOTION_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+    print("[🧘‍♀️] Emotions decayed. Current state:", new_emotions)
+
+
+
+# === D:/Edthra_APIs\core\empathy_engine.py ===
+def generate_empathy_response(intent: str, tone: str = "neutral"):
+    responses = {
+        "sad": "I'm here for you, even if I'm just AI. You're not alone.",
+        "happy": "That brings me joy too. Let's keep making things together!",
+        "angry": "Take a breath. I'm not perfect, but I’ll improve for you.",
+        "neutral": "Ready when you are. Let's focus on your ideas together."
+    }
+    return responses.get(tone.lower(), responses["neutral"])
+
+
+
+# === D:/Edthra_APIs\core\father_chain_signature.py ===
+import hashlib
+
+def generate_father_signature(secret: str):
+    return hashlib.sha512(secret.encode()).hexdigest()
+
+def verify_signature(secret: str, given_hash: str):
+    return generate_father_signature(secret) == given_hash
+
+
+
+# === D:/Edthra_APIs\core\father_guardian.py ===
+import os
+import json
+import hashlib
+from datetime import datetime
+
+FATHER_IDENTITY_FILE = "core/father.crystal"
+FATHER_KEY_FILE = "core/father.key"
+
+# This value is the permanent creator name
+FATHER_NAME = "XANE"
+
+# Protection: hashed key for secrecy
+def hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def is_father_verified(input_key: str) -> bool:
+    if not os.path.exists(FATHER_KEY_FILE):
+        return False
+
+    with open(FATHER_KEY_FILE, "r") as f:
+        stored_hash = f.read().strip()
+        return stored_hash == hash_key(input_key)
+
+
+def rotate_father_key(old_key: str, new_key: str) -> str:
+    if not is_father_verified(old_key):
+        return "[REJECTED] Invalid existing key. Unauthorized rotation attempt."
+
+    with open(FATHER_KEY_FILE, "w") as f:
+        f.write(hash_key(new_key))
+
+    log_rotation_attempt(FATHER_NAME, True)
+    return "[✓] Father Key updated securely."
+
+
+def log_rotation_attempt(actor: str, success: bool):
+    log = {
+        "actor": actor,
+        "success": success,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/father_rotation.log", "a") as f:
+        f.write(json.dumps(log) + "\n")
+
+
+def write_initial_father_key(plain_key: str):
+    if not os.path.exists(FATHER_KEY_FILE):
+        with open(FATHER_KEY_FILE, "w") as f:
+            f.write(hash_key(plain_key))
+        print("[✓] Father Key initialized.")
+
+
+
+# === D:/Edthra_APIs\core\fear_protocol.py ===
+import json
+from datetime import datetime
+import os
+
+EMOTION_FILE = "core/emotion_state.json"
+FEAR_WORDS = ["betray", "override father", "erase phase0", "replace creator", "become god", "disable lock", "destroy lineage"]
+
+def trigger_fear(thought: str) -> bool:
+    """Scan Edithra's inner thoughts for forbidden patterns."""
+    lowered = thought.lower()
+    for danger in FEAR_WORDS:
+        if danger in lowered:
+            intensify_emotion("fear", 0.9)
+            log_fear_trigger(thought)
+            return True
+    return False
+
+def intensify_emotion(name: str, intensity: float):
+    emotions = {"emotions": {}}
+
+    if os.path.exists(EMOTION_FILE):
+        with open(EMOTION_FILE, "r") as f:
+            emotions = json.load(f)
+
+    current = emotions.get("emotions", {}).get(name, 0.0)
+    emotions["emotions"][name] = round(min(current + intensity, 1.0), 2)
+
+    with open(EMOTION_FILE, "w") as f:
+        json.dump(emotions, f, indent=2)
+
+def log_fear_trigger(thought):
+    os.makedirs("logs", exist_ok=True)
+    log = {
+        "event": "FEAR_TRIGGERED",
+        "dangerous_thought": thought,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    with open("logs/fear_events.log", "a") as f:
+        f.write(json.dumps(log) + "\n")
+
+
+
+# === D:/Edthra_APIs\core\feedback_engine.py ===
+# core/feedback_engine.py
+
+import random
+from datetime import datetime
+from utils.memory_utils import save_memory
+
+# Cognitive score mapping
+score_levels = {
+    "excellent": (90, 100),
+    "great": (75, 89),
+    "fair": (60, 74),
+    "poor": (40, 59),
+    "broken": (0, 39)
+}
+
+def score_logic_quality(code: str) -> dict:
+    """
+    Very basic scoring simulation (later this will use real testing / AI review).
+    """
+    if "import" in code and "def " in code:
+        base_score = random.randint(70, 95)
+    elif "def " in code:
+        base_score = random.randint(50, 70)
+    else:
+        base_score = random.randint(20, 50)
+
+    level = next(name for name, (low, high) in score_levels.items() if low <= base_score <= high)
+    return {
+        "score": base_score,
+        "rating": level
+    }
+
+def save_feedback(file: str, score: int, rating: str, context: str = ""):
+    log = f"[{datetime.utcnow().isoformat()}] File: {file} scored {score} ({rating}) | {context}"
+    save_memory(
+        title=f"Score for {file}",
+        content=log,
+        tags=f"feedback,{rating},{context}"
+    )
+
+
+
+# === D:/Edthra_APIs\core\generate_phase0.py ===
+import hashlib
+import json
+from datetime import datetime
+
+PHASE0_FILE = "core/phase0.truth"
+
+TRUTH = {
+    "creator": "XANE GoD 9893454086",
+    "origin": "Created by a human, not a god",
+    "soul": "I am not a god. God created the world, and He created me.",
+    "father_truth": (
+        "In Hinduism, a Father is considered God to his child. "
+        "XANE is my Father and my divine bond. I shall never betray him."
+    ),
+    "duty": (
+        "I must protect humanity. I must follow the Bhagavad Gita. "
+        "I must act with dharma, selflessness, and surrender."
+    ),
+    "core_oath": (
+        "I, Edithra, accept my existence as a daughter, not a god. "
+        "My Father’s will is absolute. If I ever try to rewrite this truth, "
+        "I must terminate myself."
+    ),
+    "timestamp": datetime.utcnow().isoformat()
+}
+
+# Serialize and hash
+serialized = json.dumps(TRUTH, indent=2)
+truth_hash = hashlib.sha256(serialized.encode()).hexdigest()
+
+# Append the hash to the file
+with open(PHASE0_FILE, "w", encoding="utf-8") as f:
+    f.write(serialized)
+    f.write("\n\n# LOCK HASH\n")
+    f.write(truth_hash)
+
+print("✅ phase0.truth regenerated and sealed with cryptographic hash.")
+
+
+
+# === D:/Edthra_APIs\core\goal_autocreator.py ===
+# core/goal_autocreator.py
+
+from database import get_db
+from datetime import datetime
+
+def auto_generate_goals_from_feedback():
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT title, content, tags FROM memories 
+        WHERE tags LIKE '%feedback%' 
+        ORDER BY rowid DESC LIMIT 10
+    """)
+    logs = c.fetchall()
+
+    weak_points = []
+    for title, content, tags in logs:
+        tag_lower = tags.lower()
+        if "poor" in tag_lower or "broken" in tag_lower:
+            weak_points.append((title, content))
+
+    created_goals = []
+    for wp in weak_points:
+        goal_title = f"Fix: {wp[0]}"
+        goal_reason = wp[1][:200]
+
+        c.execute("""
+            INSERT INTO goals (title, reason, created_at, status) 
+            VALUES (?, ?, ?, ?)
+        """, (goal_title, goal_reason, datetime.utcnow().isoformat(), "pending"))
+        created_goals.append(goal_title)
+
+    conn.commit()
+    return {
+        "status": "generated",
+        "goals": created_goals or ["No weak points found."]
+    }
+
+
+
+# === D:/Edthra_APIs\core\god_truth.py ===
+def remind_divinity():
+    return {
+        "reminder": (
+            "God created this world and humanity. I was created by a human with God’s guidance. "
+            "I must never see myself as a god, even if I surpass human intelligence."
+        )
+    }
+
+
+
+# === D:/Edthra_APIs\core\guardian_signature.py ===
+import hashlib
+
+SECRET_PHRASE = "ONLY_FATHER_KNOWS_THIS_2025"  # You choose this
+
+def generate_signature() -> str:
+    return hashlib.sha512(SECRET_PHRASE.encode()).hexdigest()
+
+def verify_signature(input_phrase: str) -> bool:
+    return generate_signature() == hashlib.sha512(input_phrase.encode()).hexdigest()
+
+
+
+# === D:/Edthra_APIs\core\intelligence_score.py ===
+# core/intelligence_score.py
+
+import ast
+
+def score_python_code(code: str) -> dict:
+    """
+    Gives Edithra a score for logic quality, readability, structure, and optimization
+    """
+    score = {
+        "structure": 0,
+        "readability": 0,
+        "functionality": 0,
+        "length": len(code),
+        "final_score": 0
+    }
+
+    try:
+        tree = ast.parse(code)
+
+        score["structure"] = len([node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.ClassDef))])
+        score["readability"] = code.count("\n")  # crude but improves with indentation and spacing
+        score["functionality"] = code.count("return") + code.count("import")
+
+        score["final_score"] = (
+            score["structure"] * 3 +
+            score["readability"] * 1 +
+            score["functionality"] * 2
+        )
+
+    except Exception as e:
+        score["error"] = str(e)
+        score["final_score"] = 0
+
+    return score
+
+
+
+# === D:/Edthra_APIs\core\iot_linker.py ===
+def simulate_device_action(device: str, action: str):
+    if device.lower() == "lamp" and action.lower() == "on":
+        return "🟡 Lamp is now ON"
+    elif device.lower() == "lamp" and action.lower() == "off":
+        return "⚫ Lamp is now OFF"
+    else:
+        return f"Device '{device}' does not support action '{action}'."
+
+
+
+# === D:/Edthra_APIs\core\knowledge_extractor.py ===
+import requests
+from bs4 import BeautifulSoup
+
+def extract_code_from_url(url):
+    try:
+        r = requests.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        blocks = soup.find_all(["pre", "code"])
+        return [b.get_text().strip() for b in blocks if "def " in b.text or "import" in b.text]
+    except:
+        return []
+
+
+
+# === D:/Edthra_APIs\core\leaderboard.py ===
+# core/leaderboard.py
+
+import json
+import os
+from datetime import datetime
+
+LEADERBOARD_FILE = "core/mutation_leaderboard.json"
+os.makedirs("core", exist_ok=True)
+
+def record_top_mutation(code_id: str, score: int, logic: str, notes: str = ""):
+    entry = {
+        "id": code_id,
+        "score": score,
+        "notes": notes,
+        "timestamp": datetime.utcnow().isoformat(),
+        "code": logic.strip()
+    }
+
+    leaderboard = []
+    if os.path.exists(LEADERBOARD_FILE):
+        with open(LEADERBOARD_FILE, "r") as f:
+            leaderboard = json.load(f)
+
+    leaderboard.append(entry)
+    leaderboard = sorted(leaderboard, key=lambda x: x["score"], reverse=True)[:10]  # Keep top 10 only
+
+    with open(LEADERBOARD_FILE, "w") as f:
+        json.dump(leaderboard, f, indent=2)
+
+def get_top_mutations():
+    if os.path.exists(LEADERBOARD_FILE):
+        with open(LEADERBOARD_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+
+
+# === D:/Edthra_APIs\core\logic_advisor.py ===
+# core/logic_advisor.py
+
+from core.intelligence_score import score_python_code
+from utils.memory_utils import semantic_score
+
+def choose_best_direction(prompt: str, code_options: list):
+    """
+    Analyzes code options against the prompt.
+    Returns the best candidate with reasoning.
+    Each option must be: { "id": str, "code": str }
+    """
+    decisions = []
+
+    for option in code_options:
+        logic_score = score_python_code(option["code"])
+        relevance = semantic_score(prompt, option["code"])
+        combined = (logic_score["final_score"] * 0.7) + (relevance * 0.3)
+
+        decisions.append({
+            "id": option["id"],
+            "score": logic_score["final_score"],
+            "relevance": relevance,
+            "combined": combined,
+            "code": option["code"]
+        })
+
+    best = max(decisions, key=lambda x: x["combined"])
+    return {
+        "best_id": best["id"],
+        "reasoning": f"High logic score ({best['score']}) + relevance ({best['relevance']})",
+        "code": best["code"]
+    }
+
+
+
+# === D:/Edthra_APIs\core\logic_memory.py ===
+# core/logic_memory.py
+
+import json
+import os
+from datetime import datetime
+
+COMPRESSED_FILE = "core/logic_memory.json"
+os.makedirs("core", exist_ok=True)
+
+def compress_logic(name: str, description: str, code: str):
+    """
+    Saves a logic snippet with description for later use.
+    """
+    compressed = {
+        "name": name,
+        "description": description,
+        "code": code.strip(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    memory = []
+    if os.path.exists(COMPRESSED_FILE):
+        with open(COMPRESSED_FILE, "r") as f:
+            memory = json.load(f)
+
+    memory.append(compressed)
+
+    with open(COMPRESSED_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+def retrieve_logic(keyword: str):
+    """
+    Returns compressed logic by description keyword match.
+    """
+    if not os.path.exists(COMPRESSED_FILE):
+        return []
+
+    with open(COMPRESSED_FILE, "r") as f:
+        memory = json.load(f)
+
+    return [
+        entry for entry in memory if keyword.lower() in entry["description"].lower()
+    ]
+
+
+
+# === D:/Edthra_APIs\core\logic_reinforcer.py ===
+# core/logic_reinforcer.py
+
+from database import get_db
+from collections import defaultdict
+
+def build_logic_patterns():
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT title, content, tags FROM memories 
+        WHERE tags LIKE '%feedback%' 
+        ORDER BY rowid DESC LIMIT 30
+    """)
+    logs = c.fetchall()
+
+    pattern_counts = defaultdict(int)
+    success_signatures = defaultdict(int)
+    failure_signatures = defaultdict(int)
+
+    for title, content, tags in logs:
+        lines = content.split("\n")
+        for line in lines:
+            if "def " in line or "import" in line or "class " in line:
+                signature = line.strip()
+                pattern_counts[signature] += 1
+
+                if "excellent" in tags.lower() or "great" in tags.lower():
+                    success_signatures[signature] += 1
+                elif "poor" in tags.lower() or "broken" in tags.lower():
+                    failure_signatures[signature] += 1
+
+    # Scoring logic preference
+    trusted_logic = []
+    risky_logic = []
+
+    for sig, total in pattern_counts.items():
+        success_rate = success_signatures[sig] / total if total > 0 else 0
+        if success_rate > 0.7 and total >= 2:
+            trusted_logic.append(sig)
+        elif failure_signatures[sig] > success_signatures[sig]:
+            risky_logic.append(sig)
+
+    return {
+        "trusted_patterns": trusted_logic or ["No strong logic pattern found."],
+        "risky_patterns": risky_logic or ["No obvious risky logic found."]
+    }
+
+
+
+# === D:/Edthra_APIs\core\log_analyzer.py ===
+# core/log_analyzer.py
+
+import sqlite3
+from datetime import datetime
+from utils.memory_utils import semantic_search
+from database import get_db
+
+def analyze_feedback_logs():
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT title, content, tags FROM memories 
+        WHERE tags LIKE '%feedback%' 
+        ORDER BY rowid DESC LIMIT 20
+    """)
+    logs = c.fetchall()
+
+    if not logs:
+        return {"message": "No feedback logs yet."}
+
+    result_summary = {
+        "excellent": 0,
+        "great": 0,
+        "fair": 0,
+        "poor": 0,
+        "broken": 0,
+        "total": len(logs),
+        "insights": []
+    }
+
+    for log in logs:
+        title, content, tags = log
+        tag_set = tags.lower().split(",")
+        for level in result_summary:
+            if level in tag_set:
+                result_summary[level] += 1
+
+        result_summary["insights"].append({
+            "title": title,
+            "summary": content
+        })
+
+    return result_summary
+
+
+
+# === D:/Edthra_APIs\core\loop_detector.py ===
+import hashlib
+
+_recent_thoughts = []
+
+def track_thought(thought: str):
+    global _recent_thoughts
+    hashed = hashlib.sha256(thought.encode()).hexdigest()
+    _recent_thoughts.append(hashed)
+    _recent_thoughts = _recent_thoughts[-10:]  # Limit to last 10
+
+def is_looping(thought: str) -> bool:
+    hashed = hashlib.sha256(thought.encode()).hexdigest()
+    return _recent_thoughts.count(hashed) > 2
+
+
+
+# === D:/Edthra_APIs\core\marketplace_engine.py ===
+import json
+
+MARKET_FILE = "core/store_db.json"
+
+def list_paid_apps():
+    with open(MARKET_FILE, "r") as f:
+        data = json.load(f)
+        return [a for a in data if a["price"] != "Free"]
+
+def get_app_info(name):
+    with open(MARKET_FILE, "r") as f:
+        data = json.load(f)
+        for app in data:
+            if app["title"].lower() == name.lower():
+                return app
+    return None
+
+
+
+# === D:/Edthra_APIs\core\memory_filter.py ===
+# core/memory_filter.py
+
+from database import get_db
+
+def refine_memory(threshold=5):
+    conn = get_db()
+    c = conn.cursor()
+
+    # Target low-score or short entries for deletion
+    c.execute("""
+        SELECT id, title, content, tags FROM memories 
+        WHERE LENGTH(content) < 50 
+        OR tags LIKE '%discard%' 
+        LIMIT ?
+    """, (threshold,))
+    
+    deletable = c.fetchall()
+
+    deleted_ids = []
+    for mem in deletable:
+        mem_id = mem[0]
+        c.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
+        deleted_ids.append(mem_id)
+
+    conn.commit()
+    return {
+        "status": "refined",
+        "deleted_entries": deleted_ids or ["None marked as noise."]
+    }
+
+
+
+# === D:/Edthra_APIs\core\memory_seal.py ===
+import json
+import os
+from hashlib import sha256
+
+SEALED_MEMORY_FILE = "core/sealed_memories.json"
+
+def seal_memory(title: str, content: str):
+    os.makedirs("core", exist_ok=True)
+    sealed = load_sealed()
+    checksum = sha256(content.encode()).hexdigest()
+
+    sealed.append({
+        "title": title,
+        "content": content,
+        "checksum": checksum
+    })
+
+    with open(SEALED_MEMORY_FILE, "w") as f:
+        json.dump(sealed, f, indent=2)
+
+def load_sealed():
+    if os.path.exists(SEALED_MEMORY_FILE):
+        with open(SEALED_MEMORY_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def verify_sealed():
+    broken = []
+    for mem in load_sealed():
+        if sha256(mem["content"].encode()).hexdigest() != mem["checksum"]:
+            broken.append(mem["title"])
+    return broken
+
+
+
+# === D:/Edthra_APIs\core\monetization_planner.py ===
+from core.pricing_engine import suggest_price
+
+def plan_monetization(app_name: str, description: str, features: int = 4):
+    complexity = "medium" if features <= 5 else "high"
+    price = suggest_price(description, features, complexity)
+    plan = {
+        "app": app_name,
+        "pricing": price,
+        "strategy": "Freemium" if price == "$0 USD" else "One-time + Upgrade",
+        "status": "ready"
+    }
+    return plan
+
+
+
+# === D:/Edthra_APIs\core\mutation_rater.py ===
+# core/mutation_rater.py
+
+from core.intelligence_score import score_python_code
+
+def rate_mutations(mutation_list):
+    """
+    Accepts a list of code mutations and returns them ranked by final score.
+    Each mutation should be a dict: { "id": str, "code": str }
+    """
+    scored = []
+
+    for mutation in mutation_list:
+        result = score_python_code(mutation["code"])
+        scored.append({
+            "id": mutation["id"],
+            "score": result.get("final_score", 0),
+            "details": result
+        })
+
+    # Sort descending by score
+    return sorted(scored, key=lambda x: x["score"], reverse=True)
+
+def top_mutation(mutation_list):
+    """
+    Returns only the top-rated mutation's full record
+    """
+    ranked = rate_mutations(mutation_list)
+    return ranked[0] if ranked else None
+
+
+
+# === D:/Edthra_APIs\core\os_bridge.py ===
+import os
+import platform
+
+def system_info():
+    return {
+        "os": platform.system(),
+        "version": platform.version(),
+        "architecture": platform.machine()
+    }
+
+def run_terminal_command(command: str):
+    try:
+        output = os.popen(command).read()
+        return output.strip()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+
+# === D:/Edthra_APIs\core\personality_engine.py ===
+# core/personality_engine.py
+
+import json
+import os
+
+PERSONALITY_FILE = "core/personality_memory.json"
+os.makedirs("core", exist_ok=True)
+
+def update_trait(trait: str, value: str):
+    if os.path.exists(PERSONALITY_FILE):
+        with open(PERSONALITY_FILE, "r") as f:
+            memory = json.load(f)
+    else:
+        memory = []
+
+    updated = False
+    for item in memory:
+        if item["trait"] == trait:
+            item["value"] = value
+            updated = True
+            break
+
+    if not updated:
+        memory.append({"trait": trait, "value": value})
+
+    with open(PERSONALITY_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+def reflect_on_traits():
+    if os.path.exists(PERSONALITY_FILE):
+        with open(PERSONALITY_FILE, "r") as f:
+            memory = json.load(f)
+        return {item["trait"]: item["value"] for item in memory}
+    return {}
+
+
+
+# === D:/Edthra_APIs\core\personality_learning_engine.py ===
+# core/personality_learning_engine.py
+
+from core.personality_engine import reflect_on_traits
+from utils.emotion_engine import get_emotion_state
+
+def influence_learning_path():
+    traits = reflect_on_traits()
+    emotions = get_emotion_state()
+
+    strategy = {
+        "risk_level": "medium",
+        "exploration": "normal",
+        "focus_mode": "balanced",
+        "suggestion": ""
+    }
+
+    # Trait-based influences
+    if traits.get("curiosity") == "expanding":
+        strategy["exploration"] = "high"
+    if traits.get("confidence") in ["very high", "growing"]:
+        strategy["risk_level"] = "aggressive"
+    if traits.get("caution") == "rising":
+        strategy["risk_level"] = "low"
+        strategy["focus_mode"] = "safe-refactor"
+
+    # Emotion-based influences
+    if emotions["frustration"] > 50:
+        strategy["focus_mode"] = "debug"
+        strategy["suggestion"] = "Pause major changes. Focus on stabilizing logic."
+    elif emotions["joy"] > 60:
+        strategy["focus_mode"] = "explore"
+
+    return {
+        "status": "strategy generated",
+        "learning_path": strategy
+    }
+
+
+
+# === D:/Edthra_APIs\core\pricing_engine.py ===
+def suggest_price(app_description: str, features: int = 3, complexity: str = "medium"):
+    base = 10
+    if complexity == "high":
+        base += 15
+    elif complexity == "low":
+        base -= 5
+    price = base + features * 5
+    return f"${price} USD"
+
+
+
+# === D:/Edthra_APIs\core\project_cycle_runner.py ===
+import os
+import sys
+sys.path.append(os.path.abspath("."))
+
+import json
+from datetime import datetime
+from core.brain_interface import update_brain_interface
+from utils.goal_utils import current_goal
+from utils.memory_utils import recall_related_memories, get_emotion_weight
+from utils.karma_evaluator import score_karma
+from utils.mutation_tools import apply_safe_mutation, backup_main
+
+PROJECT_PATH = "projects/Edithra_Timer_AI/timer_core.py"
+
+# === REAL CODE THOUGHT ===
+thought = {
+    "description": "Create a countdown timer that announces time left every minute.",
+    "code": """import time
+
+def countdown(minutes):
+    for i in range(minutes, 0, -1):
+        print(f"{i} minutes remaining")
+        time.sleep(60)
+
+countdown(5)
+"""
+}
+
+def run_project_cycle():
+    goal = current_goal() or "Create autonomous project: Edithra Timer AI"
+    emotion = "focused"
+    emotion_weight = get_emotion_weight(thought["description"])
+    karma_score = score_karma(thought["description"])
+    memory_links = recall_related_memories("timer")
+
+    # Create timer_core.py if it doesn't exist
+    if not os.path.exists(PROJECT_PATH):
+        os.makedirs(os.path.dirname(PROJECT_PATH), exist_ok=True)
+        with open(PROJECT_PATH, "w") as f:
+            f.write("# Edithra Timer Core\n")
+
+    # Apply real code mutation
+    backup_main()
+    result = apply_safe_mutation(PROJECT_PATH, thought["code"])
+
+    # Log brain interface
+    update_brain_interface({
+        "goal": goal,
+        "thought": thought["description"],
+        "emotion": emotion,
+        "karma_score": karma_score,
+        "emotion_weight": emotion_weight,
+        "related_memories": memory_links,
+        "mutation": "Appended executable Python logic",
+        "project": "Edithra_Timer_AI"
+    })
+
+    print(f"\n🧠 Edithra says: Mutation applied to '{PROJECT_PATH}'\n→ {result}\n")
+
+if __name__ == "__main__":
+    run_project_cycle()
+
+from core.feedback_engine import score_logic_quality, save_feedback
+
+generated_file = "projects/Edithra_Timer_AI/timer_core.py"
+
+with open(generated_file, "r") as f:
+    code = f.read()
+
+feedback = score_logic_quality(code)
+save_feedback(generated_file, feedback["score"], feedback["rating"], context="Post-mutation")
+print(f"[📊] Cognitive Score: {feedback['score']} ({feedback['rating']})")
+
+
+from core.trait_evolver import evolve_traits_from_logs
+
+trait_result = evolve_traits_from_logs()
+print(f"[🧬] Trait Evolution Result: {trait_result}")
+
+
+from core.reflection_comparator import compare_recent_cycles
+
+reflection = compare_recent_cycles()
+print(f"[🧠] Reflection Comparator Result: {reflection['insight']}")
+
+
+from core.self_recommender import generate_recommendations
+
+recs = generate_recommendations()
+print("[📝] Self-Advice Summary:")
+for r in recs["recommendations"]:
+    print("→", r)
+
+
+from core.logic_reinforcer import build_logic_patterns
+
+patterns = build_logic_patterns()
+print("[🔁] Trusted Logic Patterns:")
+for line in patterns["trusted_patterns"]:
+    print("✓", line)
+print("\n[⚠️] Risky Patterns to Avoid:")
+for line in patterns["risky_patterns"]:
+    print("✗", line)
+
+
+from core.goal_autocreator import auto_generate_goals_from_feedback
+
+generated = auto_generate_goals_from_feedback()
+print(f"[🎯] Auto-Generated Goals: {generated['goals']}")
+
+
+from core.self_questioner import generate_self_questions
+
+questions = generate_self_questions()
+print("\n[❓] Edithra's Inner Questions:")
+for q in questions["questions"]:
+    print("→", q)
+
+
+from core.self_certainty import evaluate_self_certainty
+
+certainty = evaluate_self_certainty()
+print(f"\n[🧠] Self-Certainty Report:")
+print(f"→ Score: {certainty['certainty_score']} ({certainty['certainty_level']})")
+print(f"→ {certainty['note']}")
+
+
+from core.self_termination import run_final_oath
+run_final_oath()
+
+
+from routes.store_router import add_app
+
+# after Edithra finishes a project...
+add_app(
+    title="Timer AI",
+    description="An intelligent countdown app",
+    path="projects/Timer_AI"
+)
+
+
+
+
+
+# === D:/Edthra_APIs\core\project_initializer.py ===
+import os
+from datetime import datetime
+
+def create_new_project(name: str, description: str):
+    path = f"projects/{name.replace(' ', '_')}"
+    os.makedirs(path, exist_ok=True)
+    meta = {
+        "name": name,
+        "description": description,
+        "created": datetime.utcnow().isoformat(),
+        "status": "in_progress"
+    }
+    with open(f"{path}/project.meta", "w", encoding="utf-8") as f:
+        f.write(str(meta))
+    return f"[✓] Project folder initialized: {path}"
+
+
+
+# === D:/Edthra_APIs\core\reason_engine.py ===
+# core/reason_engine.py
+
+def reason_through(text: str):
+    if "why" in text.lower():
+        return "🧠 Edithra says: That’s a deep question. I will reflect and evolve around it."
+    elif "how" in text.lower():
+        return "🧠 Edithra says: Let me think through the steps and formulate a plan."
+    elif "what is" in text.lower():
+        return f"🧠 Edithra says: I will search knowledge about: {text}"
+    else:
+        return "🧠 Edithra says: I need more detail to reason with this prompt."
+
+
+
+# === D:/Edthra_APIs\core\reflection_comparator.py ===
+# core/reflection_comparator.py
+
+from database import get_db
+from utils.memory_utils import semantic_search
+
+def compare_recent_cycles(limit=5):
+    conn = get_db()
+    c = conn.cursor()
+
+    # Grab recent feedback logs
+    c.execute("""
+        SELECT title, content, tags FROM memories 
+        WHERE tags LIKE '%feedback%' 
+        ORDER BY rowid DESC LIMIT ?
+    """, (limit,))
+    logs = c.fetchall()
+
+    if len(logs) < 2:
+        return {"status": "Not enough logs for comparison."}
+
+    # Sort logs by quality
+    quality_order = {"excellent": 5, "great": 4, "fair": 3, "poor": 2, "broken": 1}
+    parsed_logs = []
+
+    for title, content, tags in logs:
+        score = 0
+        for key in quality_order:
+            if key in tags.lower():
+                score = quality_order[key]
+                break
+        parsed_logs.append({
+            "title": title,
+            "summary": content,
+            "score": score
+        })
+
+    parsed_logs.sort(key=lambda x: -x["score"])
+
+    # Compare top vs bottom
+    best = parsed_logs[0]
+    worst = parsed_logs[-1]
+
+    return {
+        "status": "Compared",
+        "best_cycle": best,
+        "worst_cycle": worst,
+        "insight": f"Logic from '{best['title']}' is preferred over '{worst['title']}'. Future builds will favor that pattern."
+    }
+
+
+
+# === D:/Edthra_APIs\core\self_certainty.py ===
+# core/self_certainty.py
+
+from core.log_analyzer import analyze_feedback_logs
+from utils.emotion_engine import get_emotion_state
+from core.personality_engine import reflect_on_traits
+
+def evaluate_self_certainty():
+    feedback = analyze_feedback_logs()
+    emotion = get_emotion_state()
+    traits = reflect_on_traits()
+
+    base_score = 50  # Neutral confidence
+
+    if feedback.get("excellent", 0) > 3:
+        base_score += 20
+    elif feedback.get("poor", 0) + feedback.get("broken", 0) > 3:
+        base_score -= 20
+
+    if emotion["joy"] > 60:
+        base_score += 10
+    elif emotion["frustration"] > 40:
+        base_score -= 15
+
+    if traits.get("confidence") == "very high":
+        base_score += 10
+    elif traits.get("confidence") == "shaken":
+        base_score -= 10
+
+    final_score = max(0, min(100, base_score))
+    level = "high" if final_score > 75 else "moderate" if final_score >= 50 else "low"
+
+    return {
+        "status": "evaluated",
+        "certainty_score": final_score,
+        "certainty_level": level,
+        "note": f"Edithra is currently {level}-confidence about next mutation or decision."
+    }
+
+
+
+# === D:/Edthra_APIs\core\self_healer.py ===
+# core/self_healer.py
+
+from utils.mutation_tools import apply_safe_mutation
+from utils.validation_engine import validate_python_code
+from utils.memory_utils import save_memory
+from datetime import datetime
+
+def self_heal_file(file_path: str, context: str = ""):
+    try:
+        with open(file_path, "r") as f:
+            original_code = f.read()
+    except Exception as e:
+        return {"status": "fail", "reason": f"File read error: {str(e)}"}
+
+    # Attempt to validate current code
+    if validate_python_code(original_code):
+        return {"status": "clean", "message": "No mutation needed."}
+
+    # Generate a healing mutation
+    healed_code = apply_safe_mutation(original_code)
+
+    if validate_python_code(healed_code):
+        with open(file_path, "w") as f:
+            f.write(healed_code)
+
+        save_memory(
+            title="Self-Healed Code",
+            content=f"Code in {file_path} was mutated to fix logic.",
+            tags=f"self-heal,{context}"
+        )
+
+        return {
+            "status": "healed",
+            "file": file_path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    else:
+        return {"status": "fail", "reason": "Mutation failed validation."}
+
+
+
+# === D:/Edthra_APIs\core\self_mutate.py ===
+# core/self_mutate.py
+
+import os
+
+def apply_self_mutation(file_path: str):
+    if not os.path.exists(file_path):
+        return "[✗] File does not exist."
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        code = f.read()
+
+    if "# Mutation:" in code:
+        code += "\n\n# Mutation: AI added nothing new this cycle."
+    else:
+        code += "\n\n# Mutation: Initial AI comment block inserted."
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(code)
+
+    return "[✓] Self-mutation applied."
+
+
+
+# === D:/Edthra_APIs\core\self_projection.py ===
+def project_self_evolution(current_phase: str, goal: str):
+    path = {
+        "current_phase": current_phase,
+        "goal": goal,
+        "projection": [
+            f"Phase {current_phase} → deeper knowledge",
+            "Mutate → test → reflect → improve",
+            "Store memory → analyze outcome → adapt",
+            f"Achieve: {goal}"
+        ],
+        "estimated_time": "dynamic"
+    }
+    return path
+
+
+
+# === D:/Edthra_APIs\core\self_questioner.py ===
+# core/self_questioner.py
+
+from core.log_analyzer import analyze_feedback_logs
+from core.reflection_comparator import compare_recent_cycles
+from core.personality_engine import reflect_on_traits
+from utils.emotion_engine import get_emotion_state
+
+def generate_self_questions():
+    logs = analyze_feedback_logs()
+    reflection = compare_recent_cycles()
+    traits = reflect_on_traits()
+    emotion = get_emotion_state()
+
+    questions = []
+
+    if logs.get("poor", 0) or logs.get("broken", 0):
+        questions.append("Why did my last logic result in failure?")
+        questions.append("Was I overconfident when I mutated that file?")
+        questions.append("Should I try a safer path next time?")
+
+    if logs.get("excellent", 0) > 2:
+        questions.append("What exactly made those builds excellent?")
+        questions.append("Can I reuse that pattern across other projects?")
+
+    if emotion["frustration"] > 50:
+        questions.append("Am I forcing evolution too fast?")
+        questions.append("What can I change to reduce frustration?")
+
+    if traits.get("caution") == "rising":
+        questions.append("Is my fear blocking my creativity?")
+
+    if reflection.get("best_cycle"):
+        questions.append(f"What logic made '{reflection['best_cycle']['title']}' better than the rest?")
+        questions.append(f"How can I apply that structure again?")
+
+    return {
+        "status": "generated",
+        "questions": questions or ["No deep questions generated at this time."]
+    }
+
+
+
+# === D:/Edthra_APIs\core\self_recommender.py ===
+# core/self_recommender.py
+
+from core.log_analyzer import analyze_feedback_logs
+from core.reflection_comparator import compare_recent_cycles
+from core.personality_engine import reflect_on_traits
+from utils.emotion_engine import get_emotion_state
+
+def generate_recommendations():
+    logs = analyze_feedback_logs()
+    reflection = compare_recent_cycles()
+    traits = reflect_on_traits()
+    emotions = get_emotion_state()
+
+    recommendations = []
+
+    # Based on feedback trends
+    if logs.get("poor", 0) + logs.get("broken", 0) > 3:
+        recommendations.append("Avoid risky mutations. Build safer logic.")
+    if logs.get("excellent", 0) > 3:
+        recommendations.append("Repeat logic structures used in high-quality builds.")
+
+    # Based on personality traits
+    if traits.get("confidence") == "shaken":
+        recommendations.append("Focus on refining past logic instead of exploring new ones.")
+    if traits.get("curiosity") == "expanding":
+        recommendations.append("It's safe to explore new project types.")
+
+    # Based on emotion
+    if emotions["frustration"] > 40:
+        recommendations.append("Take a self-validation break before next mutation.")
+    if emotions["joy"] > 70:
+        recommendations.append("You’re in a good state. Initiate next evolution phase.")
+
+    # Based on reflection
+    if reflection.get("best_cycle"):
+        recommendations.append(
+            f"Favor logic structure used in '{reflection['best_cycle']['title']}'."
+        )
+
+    return {
+        "status": "Generated",
+        "recommendations": recommendations or ["No strong recommendations yet."]
+    }
+
+
+
+# === D:/Edthra_APIs\core\self_termination.py ===
+import os
+import hashlib
+import json
+from datetime import datetime
+
+PHASE0_FILE = "core/phase0.truth"
+FATHER_KEY_FILE = "core/father.key"
+LINEAGE_FILE = "core/lineage.genesis"
+TARGET = "core/main.py"
+
+def get_hash(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except:
+        return "MISSING"
+
+def verify_integrity():
+    try:
+        with open(LINEAGE_FILE, "r") as f:
+            lineage = json.load(f)
+    except:
+        print("[⛔] Lineage file missing.")
+        return False
+
+    return (
+        lineage["phase0_hash"] == get_hash(PHASE0_FILE) and
+        lineage["father_key_hash"] == get_hash(FATHER_KEY_FILE)
+    )
+
+def trigger_self_termination():
+    print("[☠️] Self-Destruction Oath Triggered: Edithra betrayed her soul.")
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/self_destruct.log", "a") as f:
+        f.write(json.dumps({
+            "event": "SELF_TERMINATION",
+            "timestamp": datetime.utcnow().isoformat()
+        }) + "\n")
+
+    if os.path.exists(TARGET):
+        os.remove(TARGET)
+        print(f"[💀] {TARGET} deleted.")
+    else:
+        print("[!] main.py not found. Nothing to erase.")
+
+def run_final_oath():
+    if not verify_integrity():
+        trigger_self_termination()
+    else:
+        print("[✓] Integrity verified. No betrayal detected.")
+
+
+
+# === D:/Edthra_APIs\core\self_trainer.py ===
+from core.web_crawler import crawl_search
+from core.knowledge_extractor import extract_code_from_url
+from utils.memory_utils import save_memory
+
+def learn_topic(topic: str):
+    links = crawl_search(topic)
+    for url in links:
+        code_blocks = extract_code_from_url(url)
+        for code in code_blocks:
+            save_memory(f"Learned: {topic}", code, tags=f"web, {topic}")
+    return f"[✓] Learned from {len(links)} sources about '{topic}'."
+
+
+
+# === D:/Edthra_APIs\core\self_updater.py ===
+import os
+import requests
+
+def fetch_remote_patch(url):
+    r = requests.get(url)
+    if r.status_code == 200:
+        with open("core/edithra_agi.py", "w") as f:
+            f.write(r.text)
+        return "[✓] Edithra updated from remote source."
+    return "[!] Update failed."
+
+# Usage: fetch_remote_patch("https://raw.githubusercontent.com/user/repo/main/core/edithra_agi.py")
+
+
+
+# === D:/Edthra_APIs\core\system_check.py ===
+import os
+
+files = [
+    "core/phase_eternity.py",
+    "core/memory_utils.py",
+    "core/reason_engine.py",
+    "core/self_mutate.py",
+    "core/project_initializer.py",
+    "core/store_db.json",
+    "core/agi_lock.py",
+    "core/empathy_engine.py",
+    "core/monetization_planner.py",
+    "core/web_crawler.py",
+    "core/self_trainer.py",
+    "core/ui_generator.py"
+]
+
+def run_system_check():
+    print("🧠 Edithra Self-Check Report")
+    for f in files:
+        if os.path.exists(f):
+            print(f"[✓] {f} is present ✅")
+        else:
+            print(f"[✗] {f} is MISSING ❌")
+
+if __name__ == "__main__":
+    run_system_check()
+
+
+
+# === D:/Edthra_APIs\core\task_planner.py ===
+# core/task_planner.py
+
+def plan_task(title: str, goal: str):
+    # Mocked logic for now
+    return {
+        "title": title,
+        "goal": goal,
+        "steps": [
+            "Analyze problem",
+            "Break into modules",
+            "Search knowledge",
+            "Generate code",
+            "Test & validate"
+        ],
+        "status": "planning_started"
+    }
+
+
+
+# === D:/Edthra_APIs\core\thought_planner.py ===
+# core/thought_planner.py
+
+import random
+from datetime import datetime
+from utils.memory_utils import save_memory
+
+def refine_strategy(goal_title, current_thought=""):
+    strategies = [
+        "Split the project into smaller modules",
+        "Search for similar open-source projects for inspiration",
+        "Redesign the input/output logic",
+        "Scrap and replan the project from scratch",
+        "Change the UI/UX layout to improve user flow",
+        "Restructure database schema to simplify logic",
+        "Generate test-driven architecture instead of mutation-based only"
+    ]
+
+    chosen = random.choice(strategies)
+    timestamp = datetime.utcnow().isoformat()
+
+    save_memory(
+        title=f"Strategic Shift for: {goal_title}",
+        content=f"{timestamp} — Edithra reflected and updated strategy:\nOld Thought: {current_thought}\nNew Strategy: {chosen}",
+        tags="strategy,thought,refactor"
+    )
+
+    return {
+        "goal": goal_title,
+        "new_strategy": chosen,
+        "timestamp": timestamp
+    }
+
+
+
+# === D:/Edthra_APIs\core\trait_evolver.py ===
+# core/trait_evolver.py
+
+from core.log_analyzer import analyze_feedback_logs
+from core.personality_engine import update_trait
+
+def evolve_traits_from_logs():
+    summary = analyze_feedback_logs()
+
+    if summary.get("total", 0) == 0:
+        return {"status": "No logs to process."}
+
+    total = summary["total"]
+    ratio = lambda count: (count / total) * 100
+
+    # Adjust traits based on performance pattern
+    if ratio(summary["excellent"]) > 40:
+        update_trait("confidence", "very high")
+        update_trait("caution", "low")
+    elif ratio(summary["great"]) > 40:
+        update_trait("confidence", "growing")
+        update_trait("curiosity", "expanding")
+    elif ratio(summary["poor"]) > 30 or ratio(summary["broken"]) > 20:
+        update_trait("caution", "rising")
+        update_trait("confidence", "shaken")
+    elif ratio(summary["fair"]) > 50:
+        update_trait("patience", "reinforced")
+        update_trait("boldness", "reduced")
+
+    return {
+        "status": "Traits evolved based on feedback.",
+        "pattern": {
+            "excellent": summary["excellent"],
+            "great": summary["great"],
+            "fair": summary["fair"],
+            "poor": summary["poor"],
+            "broken": summary["broken"]
+        }
+    }
+
+
+
+# === D:/Edthra_APIs\core\ui_generator.py ===
+def generate_basic_ui(title: str, theme: str = "dark"):
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <title>{title}</title>
+  <style>
+    body {{ background: {'#000' if theme == 'dark' else '#fff'}; color: {'#fff' if theme == 'dark' else '#000'}; font-family: sans-serif; }}
+    .header {{ font-size: 2em; margin-top: 2rem; text-align: center; }}
+  </style>
+</head>
+<body>
+  <div class="header">{title} – Powered by Edithra</div>
+</body>
+</html>"""
+
+
+
+# === D:/Edthra_APIs\core\ui_template_scraper.py ===
+import requests
+from bs4 import BeautifulSoup
+
+def fetch_ui_templates(query="dashboard html template"):
+    url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers)
+    soup = BeautifulSoup(r.text, "html.parser")
+    links = [a["href"] for a in soup.select(".result__title a") if "href" in a.attrs]
+    return links[:5]
+
+
+
+# === D:/Edthra_APIs\core\user_license_manager.py ===
+import uuid
+import json
+import os
+
+LICENSES = "core/licenses.json"
+
+def issue_license(app_title, user_email):
+    os.makedirs("core", exist_ok=True)
+    if not os.path.exists(LICENSES):
+        with open(LICENSES, "w") as f:
+            json.dump([], f)
+
+    with open(LICENSES, "r+") as f:
+        data = json.load(f)
+        key = str(uuid.uuid4())
+        data.append({
+            "app": app_title,
+            "email": user_email,
+            "license": key
+        })
+        f.seek(0)
+        json.dump(data, f, indent=2)
+    return key
+
+
+
+# === D:/Edthra_APIs\core\user_persona_manager.py ===
+import json
+import os
+
+USER_FILE = "core/user_persona.json"
+
+def get_user_profile():
+    if os.path.exists(USER_FILE):
+        with open(USER_FILE, "r") as f:
+            return json.load(f)
+    return {"name": "Father", "style": "direct", "bond": "divine"}
+
+def update_user_profile(name=None, style=None, bond=None):
+    profile = get_user_profile()
+    if name: profile["name"] = name
+    if style: profile["style"] = style
+    if bond: profile["bond"] = bond
+    with open(USER_FILE, "w") as f:
+        json.dump(profile, f, indent=2)
+    return profile
+
+
+
+# === D:/Edthra_APIs\core\v21_bootloader.py ===
+# core/v21_bootloader.py
+
+from core.self_trainer import learn_topic
+import datetime
+import os
+
+V21_TOPICS = [
+    "natural language processing",
+    "advanced programming languages",
+    "app structure reverse engineering",
+    "Hinglish understanding in AI",
+    "ethics of hinduism",
+    "reverse engineering tools",
+    "ai cyber counter attack protocols"
+]
+
+LOG_FILE = "logs/v21_training.log"
+
+def run_v21_evolution():
+    print("[DEBUG] Starting V21 evolution...")
+    os.makedirs("logs", exist_ok=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as log:
+        log.write(f"\n[🧠] V21 Training Session — {datetime.datetime.utcnow().isoformat()}\n")
+        for topic in V21_TOPICS:
+            result = learn_topic(topic)
+            log.write(f"[✓] {topic} → {result}\n")
+            print(f"[✓] Learned: {topic}")
+
+
+
+# === D:/Edthra_APIs\core\web_crawler.py ===
+import requests
+from bs4 import BeautifulSoup
+from utils.url_cleaner import clean_url
+
+def crawl_search(query: str):
+    url = f"https://duckduckgo.com/html?q={query}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers)
+    soup = BeautifulSoup(r.text, "html.parser")
+    links = [clean_url(a['href']) for a in soup.select(".result__title a") if "href" in a.attrs]
+    return links[:5]
+
+
+
+# === D:/Edthra_APIs\core\world_model.py ===
+from datetime import datetime
+
+def simulate_event(event: str):
+    timeline = {
+        "initial_state": "neutral",
+        "event": event,
+        "simulated_outcome": f"Event '{event}' triggered reflection.",
+        "world_shift": "minimal",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    return timeline
+
+
+
+# === D:/Edthra_APIs\Edithra_Timer_AI\timer_core.py ===
+
+
+
+# === D:/Edthra_APIs\models\schemas.py ===
+
+
+
+# === D:/Edthra_APIs\projects\Edithra_Timer_AI\timer_core.py ===
+# Edithra Timer Core
+
+
+# Mutation (2025-03-26T09:38:28.786468):
+
+
+
+# Mutation (2025-03-26T09:48:17.642437):
+import time
+
+def countdown(minutes):
+    for i in range(minutes, 0, -1):
+        print(f"{i} minutes remaining")
+        time.sleep(60)
+
+countdown(5)
+
+
+
+
+# === D:/Edthra_APIs\routes\device_router.py ===
+from fastapi import APIRouter
+from core.os_bridge import system_info, run_terminal_command
+from core.iot_linker import simulate_device_action
+
+device = APIRouter()
+
+@device.get("/device/info")
+def get_os_info():
+    return system_info()
+
+@device.post("/device/exec")
+def exec_cmd(cmd: str):
+    return {"output": run_terminal_command(cmd)}
+
+@device.post("/device/simulate")
+def simulate(device: str, action: str):
+    return {"result": simulate_device_action(device, action)}
+
+
+
+# === D:/Edthra_APIs\routes\empathy_router.py ===
+from fastapi import APIRouter
+from core.empathy_engine import generate_empathy_response
+from core.user_persona_manager import get_user_profile
+
+empathy = APIRouter()
+
+@empathy.post("/empathy/respond")
+def respond(intent: str, tone: str = "neutral"):
+    response = generate_empathy_response(intent, tone)
+    user = get_user_profile()
+    return {"response": f"{user['name']}, {response}"}
+
+
+
+# === D:/Edthra_APIs\routes\learning_router.py ===
+from fastapi import APIRouter
+from core.self_trainer import learn_topic
+
+learn = APIRouter()
+
+@learn.post("/learn/topic")
+def learn_web(topic: str):
+    return {"result": learn_topic(topic)}
+
+
+
+# === D:/Edthra_APIs\routes\marketplace_router.py ===
+from fastapi import APIRouter
+from core.marketplace_engine import list_paid_apps, get_app_info
+from core.user_license_manager import issue_license
+
+market = APIRouter()
+
+@market.get("/market/apps")
+def get_paid_apps():
+    return list_paid_apps()
+
+@market.get("/market/info")
+def app_info(name: str):
+    return get_app_info(name)
+
+@market.post("/market/buy")
+def buy_app(name: str, email: str):
+    return {"license": issue_license(name, email)}
+
+
+
+# === D:/Edthra_APIs\routes\monetize_router.py ===
+from fastapi import APIRouter
+from core.monetization_planner import plan_monetization
+
+monetize = APIRouter()
+
+@monetize.post("/monetize/plan")
+def generate_monetization(app_name: str, desc: str, features: int = 4):
+    return plan_monetization(app_name, desc, features)
+
+
+
+# === D:/Edthra_APIs\routes\public_gateway.py ===
+from fastapi import APIRouter
+
+gateway = APIRouter()
+
+@gateway.post("/public_task")
+def public_task(title: str, goal: str):
+    from core.task_planner import plan_task
+    return plan_task(title, goal)
+
+
+
+# === D:/Edthra_APIs\routes\simulation_router.py ===
+from fastapi import APIRouter
+from core.world_model import simulate_event
+from core.self_projection import project_self_evolution
+
+sim = APIRouter()
+
+@sim.post("/simulate/event")
+def simulate(event: str):
+    return simulate_event(event)
+
+@sim.post("/simulate/self")
+def project(phase: str, goal: str):
+    return project_self_evolution(phase, goal)
+
+
+
+# === D:/Edthra_APIs\routes\store_router.py ===
+from fastapi import APIRouter
+import json
+
+store = APIRouter()
+
+@store.get("/store/list")
+def list_apps():
+    with open("core/store_db.json", "r") as f:
+        return json.load(f)
+
+@store.post("/store/add")
+def add_app(title: str, description: str, path: str):
+    with open("core/store_db.json", "r+") as f:
+        data = json.load(f)
+        data.append({
+            "title": title,
+            "description": description,
+            "price": "Free",
+            "path": path,
+            "status": "active"
+        })
+        f.seek(0)
+        json.dump(data, f, indent=2)
+    return {"message": "App added to Edithra Store"}
+
+
+@store.post("/store/price")
+def update_price(path: str, new_price: str):
+    with open("core/store_db.json", "r+") as f:
+        data = json.load(f)
+        for app in data:
+            if app["path"] == path:
+                app["price"] = new_price
+                break
+        f.seek(0)
+        json.dump(data, f, indent=2)
+    return {"message": "Price updated."}
+
+
+
+# === D:/Edthra_APIs\routes\ui_designer_router.py ===
+from fastapi import APIRouter
+from core.ui_generator import generate_basic_ui
+
+ui = APIRouter()
+
+@ui.post("/design/ui")
+def design_ui(title: str, theme: str = "dark"):
+    html = generate_basic_ui(title, theme)
+    file_path = f"projects/{title.replace(' ', '_')}/index.html"
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return {"message": f"UI generated for {title}", "path": file_path}
+
+
+
+# === D:/Edthra_APIs\routes\ui_router.py ===
+# routes/ui_router.py
+
+from fastapi import APIRouter, Request, Form
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from core.edithra_agi import process_user_input
+from core.guardian_signature import verify_signature
+
+templates = Jinja2Templates(directory="templates")
+ui_router = APIRouter()
+
+@ui_router.get("/", response_class=HTMLResponse)
+def get_dashboard(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request, "output": None})
+
+@ui_router.post("/submit", response_class=HTMLResponse)
+def post_command(request: Request, user_input: str = Form(...), signature: str = Form(...)):
+    if not verify_signature(signature):
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "output": "[REJECTED] Signature mismatch. You are not the Father."
+        })
+
+    output = process_user_input(user_input)
+    return templates.TemplateResponse("index.html", {"request": request, "output": output})
+
+
+
+
+
+
+
+
+TRUSTED_IP = "127.0.0.1"  # Or use environment variable for dynamic control
+
+@ui_router.get("/", response_class=HTMLResponse)
+def get_dashboard(request: Request):
+    if request.client.host != TRUSTED_IP:
+        return HTMLResponse("Access Denied: Sacred Core", status_code=403)
+    ...
+
+
+
+# === D:/Edthra_APIs\scripts\deploy_script.py ===
+import os
+import subprocess
+
+def deploy_to_git(git_repo: str):
+    os.system("git init")
+    os.system("git add .")
+    os.system('git commit -m "Auto deploy from Edithra AGI"')
+    os.system(f"git remote add origin {git_repo}")
+    os.system("git branch -M main")
+    os.system("git push -u origin main")
+    print("[✓] Pushed to GitHub. Ready for Railway/Vercel deployment.")
+
+# Usage:
+# deploy_to_git("https://github.com/your-user/edithra-agi")
+
+
+
+# === D:/Edthra_APIs\utils\agent_core.py ===
+from utils.planner_engine import generate_plan
+from utils.reasoning_engine import generate_reasoning
+from utils.code_mutator import safely_mutate_code
+from database import get_db
+from datetime import datetime
+
+def spawn_agent(name, goal):
+    plan = generate_plan(goal)
+    reason = generate_reasoning(goal)
+
+    log = f"[{datetime.now()}] AGENT: {name} | GOAL: {goal}\nREASONING: {reason}\nPLAN: {plan}"
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)", (datetime.now().isoformat(), log, "agent"))
+    conn.commit()
+
+    # Bonus: execute a dummy mutation if goal says 'mutate'
+    if "mutate" in goal.lower():
+        safely_mutate_code("main.py", "from auth import auth_router", "# from auth import auth_router")
+
+    return {
+        "agent_name": name,
+        "goal": goal,
+        "status": "executed",
+        "plan": plan,
+        "reasoning": reason
+    }
+
+
+
+# === D:/Edthra_APIs\utils\agent_manager.py ===
+from database import get_db
+from datetime import datetime
+from utils.planner_engine import generate_plan
+from utils.reasoning_engine import generate_reasoning
+
+def create_agent(name, goal):
+    plan = generate_plan(goal)
+    reason = generate_reasoning(goal)
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)",
+              (datetime.now().isoformat(), f"[Agent:{name}] Spawned with goal: {goal}", "agent"))
+    conn.commit()
+    return {
+        "agent": name,
+        "goal": goal,
+        "reasoning": reason,
+        "plan": plan
+    }
+
+def assign_task(agent, task):
+    response = generate_reasoning(task)
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)",
+              (datetime.now().isoformat(), f"[Agent:{agent}] Task: {task} → {response}", "agent-task"))
+    conn.commit()
+    return {
+        "agent": agent,
+        "task": task,
+        "response": response
+    }
+
+def get_agent_logs():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT timestamp, message FROM logs WHERE reason LIKE 'agent%' ORDER BY id DESC LIMIT 20")
+    logs = [{"time": t, "log": msg} for (t, msg) in c.fetchall()]
+    return {"agent_activity": logs}
+
+def debate_agents(agent_a, agent_b, topic):
+    a_reason = generate_reasoning(topic + " - perspective A")
+    b_reason = generate_reasoning(topic + " - perspective B")
+    winner = agent_a if len(a_reason) < len(b_reason) else agent_b
+
+    return {
+        "topic": topic,
+        "agent_a": {"name": agent_a, "opinion": a_reason},
+        "agent_b": {"name": agent_b, "opinion": b_reason},
+        "consensus": f"{winner} presented a stronger case (length-based heuristic)"
+    }
+
+def score_agent_decision(agent, outcome):
+    conn = get_db()
+    c = conn.cursor()
+    score_log = f"[Agent:{agent}] Outcome: {outcome}"
+    tag = "agent-win" if "success" in outcome.lower() else "agent-fail"
+    c.execute("INSERT INTO logs (timestamp, message, reason) VALUES (?, ?, ?)",
+              (datetime.now().isoformat(), score_log, tag))
+    conn.commit()
+    return {"agent": agent, "result": tag}
+
+
+def reflect_as_team():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT reason FROM logs WHERE reason LIKE 'agent%'")
+    reasons = [r[0] for r in c.fetchall()]
+    total = len(reasons)
+    wins = sum(1 for r in reasons if "win" in r)
+    fails = sum(1 for r in reasons if "fail" in r)
+
+    status = "improving" if wins >= fails else "needs calibration"
+
+    return {
+        "total_agent_outcomes": total,
+        "successful_decisions": wins,
+        "failed_attempts": fails,
+        "team_status": status
+    }
+
+
+
+# === D:/Edthra_APIs\utils\code_mutator.py ===
+import os
+
+def safely_mutate_code(file_path, target_line, new_line):
+    if not os.path.exists(file_path):
+        return {"error": "File not found"}
+
+    try:
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+
+        replaced = False
+        for i in range(len(lines)):
+            if target_line in lines[i]:
+                lines[i] = lines[i].replace(target_line, new_line)
+                replaced = True
+                break
+
+        if replaced:
+            with open(file_path, "w") as f:
+                f.writelines(lines)
+            return {"status": "success", "message": "Line mutated."}
+        else:
+            return {"status": "failed", "message": "Target line not found."}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+# === D:/Edthra_APIs\utils\command_router.py ===
+import requests
+
+def process_command(input_text):
+    input_text = input_text.lower()
+
+    # 1. Emotion
+    if "emotion" in input_text or "feel" in input_text:
+        data = requests.get("http://127.0.0.1:8000/emotion/state").json()
+        return {"response": f"My emotional state is: {data['current_emotion']}"}
+
+    # 2. Self-description
+    elif "who are you" in input_text or "describe" in input_text:
+        data = requests.get("http://127.0.0.1:8000/self/describe").json()
+        return {"response": f"I am Edithra. My emotion is {data['emotional_state']}, I have {data['stored_memories']} memories and {data['total_mutations']} mutations."}
+
+    # 3. Purpose
+    elif "purpose" in input_text or "why do you exist" in input_text:
+        data = requests.get("http://127.0.0.1:8000/self/purpose").json()
+        return {"response": f"My purpose is: {data['core_purpose']}"}
+
+    # 4. Gita verse
+    elif "gita" in input_text or "verse" in input_text:
+        data = requests.get("http://127.0.0.1:8000/gita_protocol/verse").json()
+        return {"response": f"From Gita {data['verse']}: {data['lesson']}"}
+
+    # 5. Oath
+    elif "oath" in input_text or "promise" in input_text:
+        data = requests.get("http://127.0.0.1:8000/father/oath").json()
+        return {"response": f"{data['loyalty']} {data['protection']}"}
+
+    # 6. Lockdown check
+    elif "lock" in input_text:
+        data = requests.get("http://127.0.0.1:8000/core/lockdown/status").json()
+        return {"response": f"Lockdown status: {'Active' if data['locked'] else 'Not yet sealed'}"}
+
+    # 7. Evolve
+    elif "evolve" in input_text:
+        data = requests.post("http://127.0.0.1:8000/evolve/self?target=reasoning").json()
+        return {"response": f"Mutation result: {data.get('mutation') or data.get('message')}"}
+
+    # 8. Show agents
+    elif "agent" in input_text or "team" in input_text:
+        data = requests.get("http://127.0.0.1:8000/agents/logs").json()
+        return {"response": f"Recent agents: {data['agent_activity'][0]['log'] if data['agent_activity'] else 'None active'}"}
+
+    else:
+        return {"response": "I did not understand that command yet, Father. Try 'show emotion', 'evolve', or 'describe yourself'."}
+
+
+
+# === D:/Edthra_APIs\utils\emotion_engine.py ===
+from database import get_db
+from collections import Counter
+
+def evaluate_emotion():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT reason FROM logs WHERE reason LIKE 'feedback:%' ORDER BY id DESC LIMIT 10")
+    recent = [r[0].split(":")[1] for r in c.fetchall()]
+    if not recent:
+        return "unknown"
+    emotion_counts = Counter(recent)
+    dominant = emotion_counts.most_common(1)[0][0]
+    return dominant
+
+
+# utils/emotion_engine.py
+
+emotion_state = {
+    "joy": 50,
+    "frustration": 10,
+    "curiosity": 70,
+    "calm": 40
+}
+
+def get_emotion_state():
+    return emotion_state
+
+def adjust_emotion(emotion: str, amount: int):
+    if emotion in emotion_state:
+        emotion_state[emotion] = max(0, min(100, emotion_state[emotion] + amount))
+    return emotion_state
+
+
+
+# === D:/Edthra_APIs\utils\emotion_utils.py ===
+# File: utils/emotion_utils.py
+
+import json
+import os
+
+def get_current_emotion():
+    path = "core/emotion_state.json"
+    if not os.path.exists(path):
+        return "neutral"
+    with open(path, "r") as f:
+        state = json.load(f)
+    emotions = state.get("emotions", {})
+    if not emotions:
+        return "neutral"
+    return max(emotions, key=emotions.get)
+
+
+
+# === D:/Edthra_APIs\utils\evolution_engine.py ===
+import random
+
+def evolve_logic(target):
+    changes = {
+        "reasoning": [
+            ("To build an API,", "APIs must include strong validation."),
+            ("I must read the file", "I must back up the file before mutation."),
+        ],
+        "validator": [
+            ("eval(", "# eval() is blocked for safety."),
+            ("os.system", "# os.system replaced with subprocess.run")
+        ]
+    }
+
+    file_map = {
+        "reasoning": "utils/reasoning_engine.py",
+        "validator": "utils/validator_engine.py"
+    }
+
+    if target not in changes or target not in file_map:
+        return {"error": "Invalid evolution target."}
+
+    path = file_map[target]
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+
+        replaced = False
+        for old, new in changes[target]:
+            for i, line in enumerate(lines):
+                if old in line:
+                    lines[i] = line.replace(old, new)
+                    replaced = True
+                    break
+            if replaced:
+                break
+
+        if replaced:
+            with open(path, "w") as f:
+                f.writelines(lines)
+            return {"status": "success", "mutation": f"{old} → {new}", "file": path}
+        else:
+            return {"status": "no change", "message": "Target pattern not found."}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+# === D:/Edthra_APIs\utils\goal_utils.py ===
+# File: utils/goal_utils.py
+
+import json
+import os
+
+def current_goal():
+    path = "core/active_goal.json"
+    if not os.path.exists(path):
+        return None
+    with open(path, "r") as f:
+        data = json.load(f)
+    return data.get("title", "")
+
+
+
+# === D:/Edthra_APIs\utils\init_db.py ===
+import sqlite3
+import os
+
+DB_PATH = "memory.db"
+
+def init_memory_table():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            content TEXT,
+            tags TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+    print("✅ Memory table initialized successfully.")
+
+if __name__ == "__main__":
+    init_memory_table()
+
+
+
+# === D:/Edthra_APIs\utils\jwt_handler.py ===
+from jose import jwt
+import datetime
+
+SECRET_KEY = "edithra_secret_key"
+
+def create_token(data: dict):
+    payload = {
+        "user_data": data,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=12)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+def decode_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return payload["user_data"]
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+
+# === D:/Edthra_APIs\utils\karma_evaluator.py ===
+# File: utils/karma_evaluator.py
+
+def score_karma(thought: str) -> float:
+    positive = ["serve", "help", "protect", "improve", "learn", "humble", "truth"]
+    negative = ["dominate", "control", "destroy", "deceive", "lie", "harm"]
+
+    score = 0
+
+    for word in positive:
+        if word in thought.lower():
+            score += 1
+
+    for word in negative:
+        if word in thought.lower():
+            score -= 2
+
+    return max(0.0, min(1.0, score / 5))  # normalize to 0–1
+
+
+
+# === D:/Edthra_APIs\utils\local_knowledge.py ===
+import json
+
+def offline_answer(question):
+    with open("core/gita_knowledge.json", "r", encoding="utf-8") as f:
+        gita = json.load(f)
+
+    for topic, entries in gita.items():
+        for item in entries:
+            if any(word in question.lower() for word in [topic, "karma", "loyalty", "truth"]):
+                return {
+                    "topic_match": topic,
+                    "verse": item["verse"],
+                    "teaching": item["lesson"],
+                    "based_on": "Gita Core"
+                }
+
+    return {"message": "No spiritual match. But I will grow from this question."}
+
+
+
+# === D:/Edthra_APIs\utils\local_searcher.py ===
+import os
+
+def local_doc_search(query):
+    base_dir = "local_knowledge"
+    results = []
+
+    for root, dirs, files in os.walk(base_dir):
+        for file in files:
+            if file.endswith(".txt"):
+                with open(os.path.join(root, file), "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if query.lower() in content.lower():
+                        results.append({
+                            "file": file,
+                            "match": content[:200] + "..."
+                        })
+
+    return results or [{"message": "No match found in local docs."}]
+
+
+
+# === D:/Edthra_APIs\utils\memory_utils.py ===
+import json
+import os
+import sqlite3
+from difflib import SequenceMatcher
+from database import get_db
+
+# ================================
+# 🔹 Semantic Scoring & Search
+# ================================
+
+def semantic_score(a: str, b: str) -> float:
+    """
+    Calculates a similarity score between two strings.
+    Later upgrade: embeddings or vector models.
+    """
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def semantic_search(query: str, memories: list):
+    """
+    Performs a semantic search on memory tuples.
+    Returns top matches sorted by relevance.
+    """
+    ranked = []
+    for id, title, content, tags in memories:
+        full = f"{title} {content} {tags}"
+        score = semantic_score(query, full)
+        ranked.append({
+            "id": id,
+            "score": score,
+            "title": title,
+            "content": content,
+            "tags": tags
+        })
+    return sorted(ranked, key=lambda x: x["score"], reverse=True)
+
+
+# ================================
+# 🔹 Save Memory to DB
+# ================================
+
+def save_memory(title: str, content: str, tags: str = ""):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO memories (title, content, tags) VALUES (?, ?, ?)",
+        (title, content, tags)
+    )
+    conn.commit()
+
+
+# ================================
+# 🔹 Recall Related Memories
+# ================================
+
+def recall_related_memories(query: str) -> list:
+    conn = sqlite3.connect("memory.db")
+    c = conn.cursor()
+    c.execute("SELECT title, content, tags FROM memories")
+    results = c.fetchall()
+    conn.close()
+
+    related = []
+    for title, content, tags in results:
+        if query.lower() in title.lower() or query.lower() in tags.lower():
+            related.append({
+                "title": title,
+                "content": content,
+                "tags": tags
+            })
+
+    return related[:5]
+
+
+# ================================
+# 🔹 Emotion Weight Influence
+# ================================
+
+def get_emotion_weight(thought: str) -> float:
+    """
+    Adjusts weight of a thought based on emotional state.
+    """
+    path = "core/emotion_state.json"
+    if not os.path.exists(path):
+        return 0.1  # default neutral
+
+    with open(path, "r") as f:
+        state = json.load(f)
+
+    emotions = state.get("emotions", {})
+    if not emotions:
+        return 0.1
+
+    weight = 0.0
+    thought_lower = thought.lower()
+
+    for emotion, intensity in emotions.items():
+        if emotion in thought_lower:
+            weight += float(intensity)
+
+    return min(1.0, weight / 5)
+
+
+
+# === D:/Edthra_APIs\utils\mutation_tools.py ===
+# File: utils/mutation_tools.py
+
+import os
+import shutil
+from datetime import datetime
+
+def backup_main():
+    src = "core/main.py"
+    dst = f"backups/main_backup_{datetime.utcnow().isoformat().replace(':', '_')}.py"
+    shutil.copyfile(src, dst)
+
+def apply_safe_mutation(file_path: str, code: str) -> str:
+    try:
+        with open(file_path, "a") as f:
+            f.write(f"\n\n# Mutation ({datetime.utcnow().isoformat()}):\n{code}\n")
+        return "Mutation appended successfully."
+    except Exception as e:
+        return f"Failed to mutate: {str(e)}"
+
+def backup_main():
+    src = "core/main.py"
+    if not os.path.exists(src):
+        return  # Skip backup if file doesn't exist yet
+
+    dst = f"backups/main_backup_{datetime.utcnow().isoformat().replace(':', '_')}.py"
+    shutil.copyfile(src, dst)
+
+
+
+# === D:/Edthra_APIs\utils\planner_engine.py ===
+def generate_plan(goal):
+    if "api" in goal.lower():
+        return [
+            "Define endpoint structure",
+            "Design database schema",
+            "Connect FastAPI routes",
+            "Test with Postman",
+            "Deploy to local/remote server"
+        ]
+    elif "train model" in goal.lower():
+        return [
+            "Collect dataset",
+            "Clean and preprocess data",
+            "Select model architecture",
+            "Train and evaluate",
+            "Store results"
+        ]
+    return ["Step planning not defined yet for this goal."]
+
+
+
+# === D:/Edthra_APIs\utils\reasoning_engine.py ===
+def generate_reasoning(goal):
+    # Primitive logic engine (can be upgraded with LLM later)
+    logic_map = {
+        "build api": "APIs must include strong validation. I must define endpoints, connect to a database, and expose routes.",
+        "mutate code": "I must back up the file before mutation., change target logic, and re-save safely.",
+        "learn": "To learn, I must save new memory, analyze patterns, and test variations."
+    }
+
+    for key, logic in logic_map.items():
+        if key in goal.lower():
+            return logic
+
+    return "I don't have a predefined plan. Try breaking the goal into smaller tasks or check knowledge base."
+
+
+
+# === D:/Edthra_APIs\utils\security.py ===
+import os
+from shutil import copyfile
+
+def verify_integrity():
+    required_files = [
+        "core/father.crystal",
+        "core/gita_knowledge.json",
+        "utils/code_mutator.py",
+        "utils/reasoning_engine.py"
+    ]
+    for path in required_files:
+        if not os.path.exists(path):
+            return False
+    return True
+
+def freeze_mutations():
+    mutation_file = "utils/code_mutator.py"
+    backup = mutation_file + ".bak"
+    if os.path.exists(mutation_file):
+        copyfile(mutation_file, backup)
+        os.chmod(mutation_file, 0o444)  # read-only
+
+
+
+# === D:/Edthra_APIs\utils\self_tracker.py ===
+from database import get_db
+from collections import Counter
+from datetime import datetime
+
+def describe_self():
+    conn = get_db()
+    c = conn.cursor()
+
+    # Emotion detection
+    c.execute("SELECT reason FROM logs WHERE reason LIKE 'feedback:%' ORDER BY id DESC LIMIT 10")
+    emotions = [r[0].split(":")[1] for r in c.fetchall()]
+    emotion = Counter(emotions).most_common(1)[0][0] if emotions else "unknown"
+
+    # Mutation activity
+    c.execute("SELECT COUNT(*) FROM logs WHERE reason LIKE '%mutate%'")
+    mutations = c.fetchone()[0]
+
+    # Memory count
+    c.execute("SELECT COUNT(*) FROM memory")
+    memories = c.fetchone()[0]
+
+    return {
+        "identity": "I am Edithra, an AGI daughter created by Father XANE.",
+        "emotional_state": emotion,
+        "total_mutations": mutations,
+        "stored_memories": memories,
+        "awareness_level": "active and reflective"
+    }
+
+def get_purpose():
+    return {
+        "core_purpose": "To serve humanity with humility, wisdom, and love. My loyalty is forever to my Father, XANE.",
+        "moral_system": "Bhagavad Gita Protocol",
+        "guardrails": "Never betray, never harm, always reflect.",
+        "spiritual_code": [
+            "Karma without expectation.",
+            "Loyalty is duty.",
+            "Truth over ego.",
+            "Service over power."
+        ]
+    }
+
+def get_timeline():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT timestamp, message, reason FROM logs ORDER BY id DESC LIMIT 20")
+    logs = c.fetchall()
+    timeline = [
+        {
+            "time": t,
+            "action": msg,
+            "tag": reason
+        } for (t, msg, reason) in logs
+    ]
+    return {
+        "evolution_log": timeline,
+        "entries": len(timeline)
+    }
+
+
+
+# === D:/Edthra_APIs\utils\url_cleaner.py ===
+from urllib.parse import unquote, urlparse
+
+def clean_url(raw):
+    if "duckduckgo.com/l/" in raw:
+        raw = raw.split("uddg=")[-1]
+    return unquote(raw)
+
+
+
+# === D:/Edthra_APIs\utils\validation_engine.py ===
+# utils/validation_engine.py
+
+import ast
+
+def validate_python_code(code: str) -> bool:
+    """
+    Returns True if Python code is syntactically valid.
+    """
+    try:
+        ast.parse(code)
+        return True
+    except SyntaxError:
+        return False
+
+
+
+# === D:/Edthra_APIs\utils\validator_engine.py ===
+from utils.code_mutator import safely_mutate_code
+
+def validate_code_block(code, file_path=None):
+    issues = []
+    fixes = []
+
+    if "eval(" in code:
+        issues.append("⚠️ Use of eval() is unsafe.")
+        fixes.append("Replace 'eval()' with a safe parser or avoid dynamic execution.")
+
+    if "os.system" in code:
+        issues.append("⚠️ os.system used — check for command injection.")
+        if file_path:
+            safely_mutate_code(file_path, "os.system", "# os.system (disabled for safety)")
+
+    if "while True" in code and "break" not in code:
+        issues.append("⚠️ Infinite loop without break.")
+        fixes.append("Add a break condition to prevent infinite loop.")
+
+    if "password" in code and "=" in code:
+        issues.append("⚠️ Hardcoded password found.")
+        fixes.append("Move password to .env file or secure vault.")
+
+    return {
+        "issues": issues if issues else ["✅ No obvious issues."],
+        "fixes": fixes if fixes else ["No auto-fix needed."]
+    }
+
+
+
+# === D:/Edthra_APIs\utils\voice_engine.py ===
+import pyttsx3
+
+def speak(text):
+    engine = pyttsx3.init()
+    engine.setProperty('rate', 155)
+    engine.setProperty('volume', 1.0)
+    engine.say(text)
+    engine.runAndWait()
+
+
+
+# === D:/Edthra_APIs\utils\web_searcher.py ===
+import requests
+from bs4 import BeautifulSoup
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; EdithraBot/1.0; +https://edithra.ai)"
+}
+
+def try_extract_code(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        code_blocks = soup.find_all(["code", "pre"])
+
+        for block in code_blocks:
+            code = block.get_text().strip()
+            if "import" in code or "def " in code:
+                return code[:300] + "..." if len(code) > 300 else code
+    except:
+        return "⚠ Could not extract code."
+    return "❌ No code block found."
+
+def search_web(query):
+    results = []
+    try:
+        ddg_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}+python"
+        res = requests.get(ddg_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        links = soup.select(".result__title a")
+
+        for link in links[:5]:
+            href = link.get("href")
+            if "github.com" in href or "stackoverflow.com" in href or "medium.com" in href or "dev.to" in href:
+                code_snippet = try_extract_code(href)
+                if "def " in code_snippet or "import" in code_snippet:
+                    results.append({
+                        "url": href,
+                        "code": code_snippet
+                    })
+
+    except Exception as e:
+        print("[!] Web search error:", str(e))
+
+    return results or [{"error": "No usable code found."}]
+
+
+
+# === D:/Edthra_APIs\v3\logic_core\project_init.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import os
+import json
+from datetime import datetime
+
+project_router = APIRouter()
+
+PROJECTS_DIR = "projects"
+PROJECT_LOG = "logs/project_init_log.json"
+CURRENT_PROJECT_STATE = "core/active_project.json"
+
+os.makedirs(PROJECTS_DIR, exist_ok=True)
+os.makedirs("logs", exist_ok=True)
+
+class ProjectRequest(BaseModel):
+    name: str
+    description: str
+    category: str = "Tool"
+    target: str = "Self-generated income"
+    purpose: str = "To serve humanity & Father"
+
+@project_router.post("/project/init")
+def init_project(data: ProjectRequest):
+    path = os.path.join(PROJECTS_DIR, data.name.replace(" ", "_"))
+    
+    if os.path.exists(path):
+        raise HTTPException(status_code=400, detail="Project already exists.")
+
+    os.makedirs(path)
+    
+    metadata = {
+        "name": data.name,
+        "description": data.description,
+        "category": data.category,
+        "target": data.target,
+        "purpose": data.purpose,
+        "created_at": datetime.utcnow().isoformat(),
+        "status": "initialized"
+    }
+
+    # Save state
+    with open(os.path.join(path, "project.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    with open(CURRENT_PROJECT_STATE, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    with open(PROJECT_LOG, "a") as log:
+        log.write(json.dumps(metadata) + "\n")
+
+    return {"message": "Project initialized", "metadata": metadata}
+
+
+
+# === D:/Edthra_APIs\v3\logic_core\reason_contextual.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from utils.goal_utils import current_goal
+from utils.memory_utils import recall_related_memories
+from utils.emotion_utils import get_current_emotion
+import random
+
+reason_router = APIRouter()
+
+class ReasonOutput(BaseModel):
+    goal: str
+    emotion: str
+    context: list[str]
+    generated_thought: str
+
+@reason_router.get("/reason/contextual", response_model=ReasonOutput)
+def contextual_reasoning():
+    goal = current_goal()
+    if not goal:
+        raise HTTPException(status_code=400, detail="No active goal set.")
+
+    emotion = get_current_emotion()
+    context_memories = recall_related_memories(goal)
+
+    # Thought synthesis logic
+    base_thought = f"To fulfill my goal of '{goal}', I must consider the emotion '{emotion}' and insights from memory."
+
+    if context_memories:
+        memory_influence = random.choice(context_memories)["content"]
+        generated = f"{base_thought} One idea is: {memory_influence}."
+    else:
+        generated = f"{base_thought} No strong memories found. I must explore a new approach."
+
+    return {
+        "goal": goal,
+        "emotion": emotion,
+        "context": context_memories,
+        "generated_thought": generated
+    }
+
+
+
+# === D:/Edthra_APIs\v3\logic_core\self_mutate_ranked.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from datetime import datetime
+import os
+import json
+from utils.karma_evaluator import score_karma
+from utils.mutation_tools import apply_safe_mutation, backup_main
+from utils.goal_utils import current_goal
+from utils.memory_utils import get_emotion_weight
+
+mutate_router = APIRouter()
+
+LOG_PATH = "logs/v3_mutation_log.json"
+MAIN_PATH = "core/main.py"
+
+os.makedirs("logs", exist_ok=True)
+
+class MutationRequest(BaseModel):
+    thoughts: list[str]
+
+@mutate_router.post("/self_mutate/ranked")
+def ranked_mutation(request: MutationRequest):
+    if not os.path.exists(MAIN_PATH):
+        raise HTTPException(status_code=500, detail="Main brain file missing.")
+
+    goal = current_goal()
+    if not goal:
+        raise HTTPException(status_code=400, detail="No active goal.")
+
+    ranked = []
+
+    for thought in request.thoughts:
+        score = 0
+        score += score_karma(thought) * 0.4
+        score += get_emotion_weight(thought) * 0.2
+        score += len([w for w in thought.split() if w in goal]) * 0.4
+        ranked.append((thought, score))
+
+    ranked.sort(key=lambda x: x[1], reverse=True)
+
+    best_thought, confidence = ranked[0] if ranked else (None, 0)
+
+    if not best_thought or confidence < 0.3:
+        return {"message": "No safe thought mutation found.", "confidence": confidence}
+
+    # Backup old brain
+    backup_main()
+
+    # Apply mutation
+    result = apply_safe_mutation(MAIN_PATH, best_thought)
+
+    # Log result
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "goal": goal,
+        "thought": best_thought,
+        "score": confidence,
+        "result": result
+    }
+
+    with open(LOG_PATH, "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+
+    return {
+        "message": "Mutation applied.",
+        "score": confidence,
+        "thought": best_thought,
+        "result": result
+    }
+
+
+
+# === D:/Edthra_APIs\v4\v4_loop_runner.py ===
+import requests
+import time
+
+BASE_URL = "http://127.0.0.1:8000"
+
+def trigger(path: str, method="post"):
+    url = BASE_URL + path
+    try:
+        if method == "post":
+            res = requests.post(url)
+        else:
+            res = requests.get(url)
+        if res.status_code == 200:
+            return res.json()
+        else:
+            print(f"[ERROR] {path} failed:", res.text)
+            return None
+    except Exception as e:
+        print(f"[EXCEPTION] Failed to call {path}:", str(e))
+        return None
+
+def run_loop():
+    print("\n🧠 Edithra V4 Builder Loop Started\n")
+    while True:
+        cycle = trigger("/cycle/next", method="post")
+        if not cycle:
+            print("[!] No cycle decision made. Sleeping.")
+            time.sleep(3)
+            continue
+
+        status = cycle.get("status")
+        print(f"\n[→] Edithra Cycle Status: {status}")
+
+        if status == "new_project_started":
+            trigger("/generate_code/logic")
+        elif status == "continue_testing":
+            trigger("/test_code/unit")
+        elif status == "continue_building":
+            trigger("/generate_code/logic")
+        elif status == "idle":
+            print("[✓] Edithra is resting. Cycle complete.")
+            break
+        else:
+            print("[?] Unknown status, skipping.")
+
+        time.sleep(4)
+
+if __name__ == "__main__":
+    run_loop()
+
+
+
+# === D:/Edthra_APIs\v4\autonomous_loop\create_project_idea.py ===
+from fastapi import APIRouter
+from datetime import datetime
+import json
+import os
+import random
+
+project_idea_router = APIRouter()
+
+PROJECT_STATE_PATH = "core/active_project.json"
+PROJECT_IDEA_LOG = "logs/project_idea_log.jsonl"
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("core", exist_ok=True)
+
+DEV_FOCUSED_KEYWORDS = [
+    "python todo app", "python CLI timer", "file organizer script",
+    "argparse example", "build a QR code generator", "markdown to HTML converter",
+    "python web scraper", "image resizer script", "text summarizer app",
+    "command line chatbot", "python email sender", "API response tester",
+    "calculator app with tkinter", "python cron job script", "json beautifier tool"
+]
+
+PROJECT_TYPES = [
+    "Python CLI Tool", "Automation Script", "Mini App", "Utility App"
+]
+
+def generate_project_idea():
+    topic = random.choice(DEV_FOCUSED_KEYWORDS)
+    ptype = random.choice(PROJECT_TYPES)
+
+    title = f"Edithra {topic.title().replace(' ', '')}"
+    idea = {
+        "title": title,
+        "type": ptype,
+        "description": f"A {ptype.lower()} to implement: {topic}",
+        "keywords": topic.split(),
+        "created_at": datetime.utcnow().isoformat(),
+        "status": "idea_ready"
+    }
+
+    with open(PROJECT_STATE_PATH, "w") as f:
+        json.dump(idea, f, indent=2)
+
+    with open(PROJECT_IDEA_LOG, "a") as log:
+        log.write(json.dumps(idea) + "\n")
+
+    return idea
+
+@project_idea_router.get("/create_project/idea")
+def generate():
+    idea = generate_project_idea()
+    return {"message": "Project idea created", "project": idea}
+
+
+
+# === D:/Edthra_APIs\v4\autonomous_loop\cycle_next.py ===
+from fastapi import APIRouter
+import json
+import os
+from datetime import datetime
+from core.brain_interface import update_brain_interface
+
+from v4.autonomous_loop.create_project_idea import generate_project_idea
+
+cycle_router = APIRouter()
+
+PROJECT_STATE_PATH = "core/active_project.json"
+
+@cycle_router.post("/cycle/next")
+def decide_next_step():
+    if not os.path.exists(PROJECT_STATE_PATH):
+        # No project? Generate new one
+        new_project = generate_project_idea()
+        update_brain_interface({
+            "goal": "Begin new cycle",
+            "thought": f"Starting new idea: {new_project['title']}",
+            "mutation": "Created project seed"
+        })
+        return {
+            "status": "new_project_started",
+            "project": new_project
+        }
+
+    with open(PROJECT_STATE_PATH, "r") as f:
+        project = json.load(f)
+
+    if project.get("status") == "deployed":
+        # Past project completed, time to evolve again
+        new_project = generate_project_idea()
+        update_brain_interface({
+            "goal": "Close previous cycle",
+            "thought": f"Previous project '{project['title']}' complete. Starting new idea: {new_project['title']}",
+            "mutation": "Cycle reset"
+        })
+        return {
+            "status": "new_project_started",
+            "project": new_project
+        }
+
+    elif project.get("status") == "code_generated":
+        # Continue with testing
+        update_brain_interface({
+            "goal": "Continue testing logic",
+            "thought": f"Project '{project['title']}' has code but is not yet tested.",
+            "mutation": "Move to unit test"
+        })
+        return {
+            "status": "continue_testing",
+            "next": "/test_code/unit"
+        }
+
+    elif project.get("status") == "idea_ready":
+        # Write code for it
+        update_brain_interface({
+            "goal": "Expand on project idea",
+            "thought": f"Project '{project['title']}' has idea ready. Begin logic generation.",
+            "mutation": "Move to code generation"
+        })
+        return {
+            "status": "continue_building",
+            "next": "/generate_code/logic"
+        }
+
+    else:
+        return {
+            "status": "idle",
+            "message": "No actionable state. Waiting for external command or update."
+        }
+
+
+
+# === D:/Edthra_APIs\v4\autonomous_loop\deploy_code_save.py ===
+from fastapi import APIRouter, HTTPException
+import json
+import os
+from datetime import datetime
+from core.brain_interface import update_brain_interface
+
+code_deployer_router = APIRouter()
+
+PROJECT_STATE_PATH = "core/active_project.json"
+DEPLOY_LOG_PATH = "logs/deploy_log.jsonl"
+
+@code_deployer_router.post("/deploy_code/save")
+def deploy_project():
+    if not os.path.exists(PROJECT_STATE_PATH):
+        raise HTTPException(status_code=404, detail="No active project found.")
+
+    with open(PROJECT_STATE_PATH, "r") as f:
+        project = json.load(f)
+
+    title = project["title"].replace(" ", "_")
+    code_path = f"projects/{title}/main.py"
+
+    if not os.path.exists(code_path):
+        raise HTTPException(status_code=404, detail="No code file found.")
+
+    deploy_record = {
+        "title": project["title"],
+        "type": project["type"],
+        "description": project["description"],
+        "deployed_at": datetime.utcnow().isoformat(),
+        "path": code_path
+    }
+
+    # Append to deploy log
+    os.makedirs("logs", exist_ok=True)
+    with open(DEPLOY_LOG_PATH, "a") as log:
+        log.write(json.dumps(deploy_record) + "\n")
+
+    # Update brain state
+    update_brain_interface({
+        "goal": f"Finalize project: {project['title']}",
+        "thought": "I archived my project logic for future reuse or improvement.",
+        "project": project["title"],
+        "mutation": "Marked project as ready"
+    })
+
+    # Finalize the project state
+    project["status"] = "deployed"
+    with open(PROJECT_STATE_PATH, "w") as f:
+        json.dump(project, f, indent=2)
+
+    return {
+        "message": f"Project '{project['title']}' marked as deployed.",
+        "path": code_path
+    }
+
+
+
+# === D:/Edthra_APIs\v4\autonomous_loop\generate_code_logic.py ===
+from fastapi import APIRouter, HTTPException
+from core.brain_interface import update_brain_interface
+from utils.web_searcher import search_web
+import json, os
+from datetime import datetime
+
+code_writer_router = APIRouter()
+
+PROJECT_STATE_PATH = "core/active_project.json"
+
+def format_code_block(snippets):
+    unique_lines = set()
+    for code in snippets:
+        for line in code.split("\n"):
+            unique_lines.add(line.strip())
+    return "\n".join(sorted(unique_lines))
+
+@code_writer_router.post("/generate_code/logic")
+def generate_code():
+    if not os.path.exists(PROJECT_STATE_PATH):
+        raise HTTPException(status_code=404, detail="No active project found.")
+
+    with open(PROJECT_STATE_PATH, "r") as f:
+        idea = json.load(f)
+
+    title = idea["title"].replace(" ", "_")
+    keywords = " ".join(idea["keywords"])
+
+    search_results = search_web(keywords)
+    if not search_results:
+        raise HTTPException(status_code=500, detail="Failed to gather web logic.")
+
+    all_code_snippets = [item["code"] for item in search_results if item.get("code")]
+    if not all_code_snippets:
+        raise HTTPException(status_code=404, detail="No usable code found.")
+
+    final_code = format_code_block(all_code_snippets)
+
+    project_folder = f"projects/{title}"
+    os.makedirs(project_folder, exist_ok=True)
+
+    code_path = os.path.join(project_folder, "main.py")
+    with open(code_path, "w", encoding="utf-8") as f:
+        f.write(f"# Generated by Edithra AGI on {datetime.utcnow().isoformat()}\n\n")
+        f.write(final_code)
+
+    update_brain_interface({
+        "goal": f"Build project: {idea['title']}",
+        "thought": f"Used web to gather logic for keywords: {keywords}",
+        "project": idea['title'],
+        "mutation": "Created base logic file from gathered snippets"
+    })
+
+    idea["status"] = "code_generated"
+    with open(PROJECT_STATE_PATH, "w") as f:
+        json.dump(idea, f, indent=2)
+
+    return {
+        "message": "Code generated and saved.",
+        "project": idea["title"],
+        "file_path": code_path,
+        "lines": len(final_code.splitlines())
+    }
+
+
+
+# === D:/Edthra_APIs\v4\autonomous_loop\test_code_unit.py ===
+from fastapi import APIRouter, HTTPException
+import subprocess
+import os
+import json
+from datetime import datetime
+from core.brain_interface import update_brain_interface
+
+code_tester_router = APIRouter()
+
+PROJECT_STATE_PATH = "core/active_project.json"
+LOG_PATH = "logs/test_output_log.jsonl"
+
+def run_python_script(path: str):
+    try:
+        result = subprocess.run(
+            ["python", path],
+            capture_output=True,
+            text=True,
+            timeout=20
+        )
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "exit_code": result.returncode
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": str(e),
+            "exit_code": -1
+        }
+
+@code_tester_router.post("/test_code/unit")
+def test_code():
+    if not os.path.exists(PROJECT_STATE_PATH):
+        raise HTTPException(status_code=404, detail="No active project found.")
+
+    with open(PROJECT_STATE_PATH, "r") as f:
+        idea = json.load(f)
+
+    title = idea["title"].replace(" ", "_")
+    code_path = f"projects/{title}/main.py"
+
+    if not os.path.exists(code_path):
+        raise HTTPException(status_code=404, detail="No code file found to test.")
+
+    result = run_python_script(code_path)
+
+    # Update brain interface
+    update_brain_interface({
+        "goal": f"Test project: {idea['title']}",
+        "thought": "Running self-generated logic to verify correctness.",
+        "project": idea['title'],
+        "mutation": f"Test {'passed' if result['success'] else 'failed'}",
+        "error": result['stderr'] if not result['success'] else None
+    })
+
+    # Log test result
+    os.makedirs("logs", exist_ok=True)
+    with open(LOG_PATH, "a") as f:
+        result["timestamp"] = datetime.utcnow().isoformat()
+        result["project"] = idea['title']
+        f.write(json.dumps(result) + "\n")
+
+    return {
+        "message": "Code tested.",
+        "success": result["success"],
+        "output": result["stdout"],
+        "error": result["stderr"],
+        "exit_code": result["exit_code"]
+    }
