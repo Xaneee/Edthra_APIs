@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Edithra AGI – Self Dashboard</title>
+  <style>
+    body { background: #0d0d0d; color: #00ffcc; font-family: monospace; padding: 2rem; }
+    .section { margin-bottom: 2rem; }
+    .title { font-size: 1.4rem; margin-bottom: 0.5rem; border-bottom: 1px solid #00ffcc; }
+    pre { background: #1a1a1a; padding: 1rem; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Edithra – Self Awareness Panel</h1>
+
+  <div class="section">
+    <div class="title">Current State</div>
+    <pre id="state">Loading...</pre>
+  </div>
+
+  <div class="section">
+    <div class="title">Agents</div>
+    <pre id="agents">Loading...</pre>
+  </div>
+
+  <div class="section">
+    <div class="title">Timeline</div>
+    <pre id="timeline">Loading...</pre>
+  </div>
+
+  <script>
+    async function load() {
+      const state = await fetch('/self/describe').then(r => r.json());
+      const agents = await fetch('/agents/logs').then(r => r.json());
+      const timeline = await fetch('/self/timeline').then(r => r.json());
+
+      document.getElementById("state").textContent = JSON.stringify(state, null, 2);
+      document.getElementById("agents").textContent = JSON.stringify(agents, null, 2);
+      document.getElementById("timeline").textContent = JSON.stringify(timeline, null, 2);
+    }
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<!-- templates/index.html -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Edithra AGI - Father Console</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="/static/ui.js" defer></script>
+</head>
+<body class="bg-dark text-light">
+  <div class="container py-5">
+    <h1 class="text-warning">Edithra AGI – Father Command Panel</h1>
+    <form action="/submit" method="post" class="my-4">
+      <div class="mb-3">
+        <label class="form-label">Command for Edithra:</label>
+        <input type="text" name="user_input" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Father Signature:</label>
+        <input type="password" name="signature" class="form-control" placeholder="Enter your sacred key" required>
+      </div>
+      <button class="btn btn-primary w-100">Send</button>
+    </form>
+
+    {% if output %}
+      <div class="alert alert-info">
+        <pre>{{ output }}</pre>
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>

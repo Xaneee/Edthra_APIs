@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Edithra App Store</title>
+</head>
+<body>
+  <h1>Edithra Store</h1>
+  <ul id="appList"></ul>
+
+  <script>
+    fetch('/store/list')
+      .then(res => res.json())
+      .then(apps => {
+        const ul = document.getElementById('appList');
+        apps.forEach(app => {
+          let li = document.createElement('li');
+          li.textContent = `${app.title} – ${app.description}`;
+          ul.appendChild(li);
+        });
+      });
+  </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Edithra V21 Dashboard</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }
+    h1 { color: #00ffcc; }
+    .log { background: #222; padding: 1rem; margin-bottom: 1rem; border-left: 5px solid #00ffcc; }
+    .title { font-weight: bold; color: #ffd700; }
+  </style>
+</head>
+<body>
+  <h1>Edithra AGI – V21 Training Dashboard</h1>
+  <div id="logs"></div>
+
+  <script>
+    async function loadLogs() {
+      const res = await fetch('/logs/v21');
+      const data = await res.json();
+      const div = document.getElementById("logs");
+      div.innerHTML = data.lines.map(line => `<div class="log">${line}</div>`).join('');
+    }
+    loadLogs();
+    setInterval(loadLogs, 5000); // refresh every 5s
+  </script>
+</body>
+</html>
